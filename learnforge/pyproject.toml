@@ -1,0 +1,27 @@
+[project]
+name = "learnforge"
+version = "0.1.0"
+description = "LearnForge — Hierarchical Multi-Agent learning companion for programmers (MVP skeleton)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "langgraph>=0.2",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "anthropic>=0.34",
+    "sqlite-vec>=0.1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["learnforge*"]
+
+# 说明:design.md 声明运行环境为 Python 3.11。
+# 为在本地 3.9 上也能验证骨架,源码统一使用 typing.Optional/List/Union 而非 `X | None`。
