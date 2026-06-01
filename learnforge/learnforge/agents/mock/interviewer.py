@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from ...contracts.agents.mock import InterviewerInput, InterviewerOutput
 from ...contracts.agents.retrieval import RetrievalInput
-from ...contracts.enums import AgentId
+from ...contracts.enums import AgentId, KnowledgeScope, RetrievalMethod
 from ..base import BaseAgent
 from ..retrieval import RetrievalAgent
 
@@ -25,7 +25,16 @@ class InterviewerAgent(BaseAgent):
         chunks = payload.retrieved
         if not chunks:
             try:
-                chunks = self.retrieval.run(RetrievalInput(query=payload.topic, top_k=4)).chunks
+                self.require_tool("retrieval.search")
+                # 出题参考共享知识库（题库/面经/知识点），混合检索。
+                chunks = self.retrieval.run(
+                    RetrievalInput(
+                        query=payload.topic,
+                        top_k=4,
+                        scopes=[KnowledgeScope.SHARED],
+                        method=RetrievalMethod.HYBRID,
+                    )
+                ).chunks
             except Exception:
                 chunks = []
 

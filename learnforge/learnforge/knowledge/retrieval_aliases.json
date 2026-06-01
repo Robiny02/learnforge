@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "jwt_tamper",
+      "modes": ["workflow_v2", "react"],
+      "all": ["登录态", "篡改"],
+      "rewrite": "JWT 签名 校验 防篡改"
+    },
+    {
+      "id": "optimistic_read_heavy",
+      "modes": ["workflow_v2", "react"],
+      "all": ["读多写少"],
+      "rewrite": "乐观锁 版本号 并发控制"
+    },
+    {
+      "id": "redis_lock_renewal",
+      "modes": ["workflow_v2", "react"],
+      "all": ["分布式锁", "续期"],
+      "rewrite": "Redis 分布式锁 watchdog 锁续期 锁释放"
+    },
+    {
+      "id": "redis_cache_expiry",
+      "modes": ["workflow_v2", "react"],
+      "all": ["缓存", "过期"],
+      "rewrite": "Redis TTL EXPIRE 惰性删除 定期删除 缓存雪崩"
+    },
+    {
+      "id": "mysql_mvcc_snapshot",
+      "modes": ["workflow_v2"],
+      "all": ["快照读", "行版本"],
+      "rewrite": "MySQL MVCC undo log read view 版本可见性"
+    },
+    {
+      "id": "mysql_index_not_used",
+      "modes": ["workflow_v2"],
+      "all": ["索引", "不走"],
+      "rewrite": "B+ 树 索引失效 最左前缀 函数列 隐式转换"
+    },
+    {
+      "id": "kafka_ordering",
+      "modes": ["workflow_v2"],
+      "all": ["消息队列", "顺序"],
+      "rewrite": "Kafka 分区 顺序消费 订单"
+    },
+    {
+      "id": "mq_idempotency",
+      "modes": ["workflow_v2"],
+      "all": ["消费者", "重复"],
+      "rewrite": "MQ 消费 幂等 去重表 状态机"
+    },
+    {
+      "id": "rate_limit_burst",
+      "modes": ["workflow_v2"],
+      "all": ["突发", "限速"],
+      "rewrite": "令牌桶 限流 突发流量 容量 burst"
+    },
+    {
+      "id": "threadpool_queue",
+      "modes": ["workflow_v2"],
+      "all": ["线程池", "队列"],
+      "rewrite": "线程池 core max queue rejection"
+    },
+    {
+      "id": "mock_weakness_recent",
+      "modes": ["workflow_v2"],
+      "any": ["昨天 mock", "上次模拟面试", "mock 的缺点", "没答好"],
+      "rewrite": "mock 反馈 薄弱点 回答不清晰 缺点"
+    },
+    {
+      "id": "recent_weakness_summary",
+      "modes": ["workflow_v2"],
+      "all": ["最近", "缺点"],
+      "rewrite": "薄弱点 最近 mock 不稳定"
+    },
+    {
+      "id": "review_weak_points",
+      "modes": ["workflow_v2"],
+      "all": ["薄弱点"],
+      "rewrite": "薄弱点 mock 反馈 不稳定"
+    },
+    {
+      "id": "distributed_consistency",
+      "modes": ["workflow_v2"],
+      "all": ["跨服务", "一致性"],
+      "rewrite": "分布式事务 TCC Saga 本地消息表"
+    },
+    {
+      "id": "react_weak_broad",
+      "modes": ["react"],
+      "any": ["哪里卡", "卡住", "薄弱", "弱点"],
+      "rewrite": "薄弱点 mock 面试"
+    },
+    {
+      "id": "react_history_broad",
+      "modes": ["react"],
+      "any": ["上次", "之前", "当时"],
+      "rewrite": "历史 记忆 复盘"
+    }
+  ]
+}

@@ -15,6 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+# 向量检索 embedding provider（可选；无 key 时离线降级到 FTS）。
+embeddings = ["openai>=1.0", "voyageai>=0.2"]
+# PostgreSQL 知识库后端（可选）。未安装时仅用 SQLite，相关测试自动 skip。
+# pgvector 扩展在 DB 侧；Python 侧仅需 psycopg（向量以字符串字面量传参）。
+postgres = ["psycopg[binary]>=3.1"]
 
 [build-system]
 requires = ["setuptools>=68"]

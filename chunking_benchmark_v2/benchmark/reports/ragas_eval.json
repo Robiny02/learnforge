@@ -1,0 +1,70 @@
+{
+  "judge": "openai/gpt-4o-mini",
+  "k": 5,
+  "table": {
+    "fixed/ALL": {
+      "context_precision": 0.901,
+      "context_recall": 1.0
+    },
+    "fixed/github_md": {
+      "context_precision": 0.954,
+      "context_recall": 1.0
+    },
+    "fixed/xiaohongshu": {
+      "context_precision": 0.907,
+      "context_recall": 1.0
+    },
+    "fixed/xiaolin_coding_style_blog": {
+      "context_precision": 0.853,
+      "context_recall": 1.0
+    },
+    "llamaindex/ALL": {
+      "context_precision": 0.838,
+      "context_recall": 0.929
+    },
+    "llamaindex/github_md": {
+      "context_precision": 0.867,
+      "context_recall": 0.75
+    },
+    "llamaindex/xiaohongshu": {
+      "context_precision": 0.875,
+      "context_recall": 1.0
+    },
+    "llamaindex/xiaolin_coding_style_blog": {
+      "context_precision": 0.778,
+      "context_recall": 1.0
+    },
+    "semantic/ALL": {
+      "context_precision": 0.806,
+      "context_recall": 0.929
+    },
+    "semantic/github_md": {
+      "context_precision": 0.842,
+      "context_recall": 1.0
+    },
+    "semantic/xiaohongshu": {
+      "context_precision": 0.818,
+      "context_recall": 0.8
+    },
+    "semantic/xiaolin_coding_style_blog": {
+      "context_precision": 0.767,
+      "context_recall": 1.0
+    },
+    "structural/ALL": {
+      "context_precision": 0.712,
+      "context_recall": 0.929
+    },
+    "structural/github_md": {
+      "context_precision": 0.789,
+      "context_recall": 1.0
+    },
+    "structural/xiaohongshu": {
+      "context_precision": 0.697,
+      "context_recall": 0.8
+    },
+    "structural/xiaolin_coding_style_blog": {
+      "context_precision": 0.667,
+      "context_recall": 1.0
+    }
+  }
+}

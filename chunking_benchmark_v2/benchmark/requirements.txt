@@ -1,0 +1,20 @@
+# Chunking benchmark dependencies.
+# Phase 1 runs fully offline with the stdlib only; LlamaIndex is the one
+# framework dependency (Plan §4.4).
+#
+# NOTE: the venv is Python 3.9.6. llama-index-core >=0.11 requires Python 3.10+
+# (uses `X | None` at class-eval time), so pin to the 0.10.x line on 3.9:
+llama-index-core>=0.10,<0.11
+
+# Optional (Phase 2 hybrid vector path / Phase 3 LLM block re-check):
+#   set LF_EMBEDDING_PROVIDER + key to enable vector retrieval; otherwise the
+#   retriever degrades to FTS/BM25 and the block classifier stays rule-only.
+#   See .env.example. Install the SDK matching your provider:
+# openai      # provider=openai  (text-embedding-3-small/large)
+# voyageai    # provider=voyage  (voyage-3)
+#
+# Stronger LLM-judged retrieval metrics (scripts/eval_ragas.py):
+# ragas>=0.4,<0.5
+# langchain-openai
+#   Judge + embeddings reuse the same OPENAI_API_KEY / OPENAI_BASE_URL
+#   (works through OpenRouter, e.g. judge=openai/gpt-4o-mini).

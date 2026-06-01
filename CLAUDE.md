@@ -50,7 +50,22 @@ Model names can be overridden via env vars `LF_HAIKU_MODEL` and `LF_SONNET_MODEL
 | `MockInterviewAgent` | Interviewer, Judge, Strategist, Coach | Multi-turn mock interviews via LangGraph subgraph |
 | `DiagnosisAgent` | — | Read-only weakness detection (ReAct 3-step) |
 
-`RetrievalAgent` is a shared sub-capability (sqlite-vec vector search + FTS5 BM25, RRF fusion) not directly scheduled by Manager.
+`RetrievalAgent` is a shared sub-capability and the **unified retrieval entry point** for a pluggable, two-layer RAG architecture, not directly scheduled by Manager. See "Knowledge base & retrieval" below.
+
+### Knowledge base & retrieval (`knowledge/`)
+
+Two-layer knowledge system selected via `KnowledgeScope`:
+- **LOCAL** (本地用户库): personal data — `mock_turns`, `qa_history`.
+- **SHARED** (共享知识库): reusable public content — `chunks` (course/blog/interview/doc slices) and `knowledge_atoms` (public knowledge points / question bank).
+
+Pluggable components:
+- `knowledge/sources/` — `KnowledgeSource` protocol + `LocalUserSource` / `LocalSharedSource` / `RemoteSharedSource` (remote KB via `LF_REMOTE_KB_URL`; offline → does not participate). Replaces the old `LocalBackend`/`CloudBackend`.
+- `RetrievalMethod` enum — `keyword` / `fulltext` (FTS5 BM25) / `vector` (sqlite-vec KNN) / `hybrid` (FTS+vector RRF, default); `RetrievalFilters` adds metadata filtering (topic/source_type/kb_scope/difficulty/source_name).
+- `llm/embeddings.py` — `EmbeddingProvider` (OpenAI/Voyage/Null), `EMBEDDINGS` singleton; env `LF_EMBEDDING_PROVIDER` ∈ {none,openai,voyage}, `LF_EMBEDDING_DIM` (default 1024, OpenAI uses `dimensions` to match vec0). No key → vector degrades to FTS.
+- `knowledge/rerank.py` — `Reranker` protocol, `NoOpReranker` (default), optional `LLMReranker`.
+- `knowledge/ingest.py` — ingestion pipeline (chunk → embed → write `chunks`/`chunk_fts`/`chunk_vectors`; `sync_atom_index()` for atoms). CLI: `python -m learnforge.knowledge.ingest --file docs.json | --sync-atoms`. Writes content/indexes only, never mastery.
+
+`RetrievalAgent.run()` flow: rewrite → embed (if vector/hybrid) → query selected sources → cross-source RRF → optional rerank → top_k; output carries `method_used` + `degraded`. `RetrievalInput.backend` is kept for backward compat (maps to scopes via `effective_scopes()`).
 
 ### Data contracts (`contracts/`)
 
@@ -74,9 +89,9 @@ Pure functions, no side effects. Used by DiagnosisAgent (read-only) and Manager 
 
 ### Storage (`storage/`)
 
-- `schema.sql` — full DDL: `knowledge_atoms`, `chunks`, `atom_vectors`/`chunk_vectors` (vec0, dim=1024), `atom_fts`/`chunk_fts` (FTS5), `interaction_events`, `mock_sessions`/`mock_turns`, `diagnosis_reports`, `agent_traces`, `user_profile`, `learning_paths`
-- `db.py` — `init_db(path)`, `get_connection(path)`
-- `repositories.py` — `AtomRepository`, `EventRepository`, `TraceRepository`, `LearningPathRepository`
+- `schema.sql` — full DDL: `knowledge_atoms`, `chunks` (+ `kb_scope`), `atom_vectors`/`chunk_vectors` (vec0, dim=`EMBEDDING_DIM`), `atom_fts`/`chunk_fts` (FTS5), `qa_history`/`qa_history_fts`, `interaction_events`, `mock_sessions`/`mock_turns`, `diagnosis_reports`, `agent_traces`, `user_profile`, `learning_paths`
+- `db.py` — `init_db(path)`, `get_connection(path)`; injects `config.EMBEDDING_DIM` into vec0 DDL; FTS5-only degradation when sqlite-vec absent
+- `repositories.py` — `AtomRepository` (+ `fts_match`/`vector_knn`/`sync_index`), `ChunkRepository` (`fts_match`/`vector_knn`/`upsert`), `MockTurnRepository`, `QAHistoryRepository`, `EventRepository`, `TraceRepository`, `LearningPathRepository`
 
 ### LLM client (`llm/client.py`)
 

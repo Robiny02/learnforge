@@ -7,3 +7,9 @@ node_modules/
 target/
 .idea/
 .vscode/
+.env
+learnforge.db
+data/
+learnforge/data/
+learnforge/runtime/
+chunking_benchmark_v2/benchmark/reports/.cache/

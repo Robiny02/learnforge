@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LearnForge Farm Studio</title>
+    <link rel="stylesheet" href="/ui-static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <div>
+            <strong>LearnForge</strong>
+            <small>Farm Studio</small>
+          </div>
+        </div>
+
+        <nav class="view-tabs" aria-label="Workspace views">
+          <button class="active" data-view="chat">Chat</button>
+          <button data-view="review">Review</button>
+          <button data-view="files">Files</button>
+        </nav>
+
+        <div class="runtime">
+          <span class="status-dot"></span>
+          <span>offline-safe</span>
+          <span id="traceId">trace idle</span>
+        </div>
+      </header>
+
+      <main class="main-area">
+        <section class="view active" id="view-chat">
+          <section class="chat-card">
+            <div class="farm-backdrop" aria-hidden="true">
+              <img src="/ui-static/assets/farm-ide-background.png" alt="" />
+              <div class="pixel-sprite crystal"></div>
+              <div class="pixel-sprite crop-one"></div>
+              <div class="pixel-sprite crop-two"></div>
+              <div class="pixel-sprite lantern"></div>
+              <div class="pixel-sprite scroll"></div>
+              <div class="pixel-sprite firefly firefly-one"></div>
+              <div class="pixel-sprite firefly firefly-two"></div>
+            </div>
+
+            <div class="chat-header">
+              <div>
+                <span class="eyebrow">Farm Console</span>
+                <h1>和 LearnForge 对话</h1>
+              </div>
+              <div class="mode-control">
+                <label for="modeSelect">Mode</label>
+                <div class="select-wrap">
+                  <select id="modeSelect">
+                    <option value="qa">QA</option>
+                    <option value="diagnose">Diagnose</option>
+                    <option value="plan">Plan</option>
+                    <option value="note">Note</option>
+                    <option value="mock">Mock</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="conversation" id="conversation" aria-live="polite">
+              <article class="message agent">
+                <div class="pixel-avatar avatar-agent" aria-hidden="true"><span></span></div>
+                <div class="message-bubble">
+                  <div class="message-meta">LearnForge · Manager</div>
+                  <p>早上好，今天的学习地块已经晒到太阳了。把一个概念、项目问题或面试主题丢过来，我们先从最需要浇水的地方开始。</p>
+                </div>
+              </article>
+            </div>
+
+            <form class="composer" id="composer">
+              <input id="promptInput" autocomplete="off" placeholder="问一个问题，或描述你的学习目标..." />
+              <button type="submit">Send</button>
+            </form>
+          </section>
+
+          <aside class="chain-card">
+            <div class="panel-title">
+              <span>Agent Chain</span>
+              <b id="chainStatus">idle</b>
+            </div>
+            <ol class="agent-chain" id="agentChain">
+              <li class="waiting">
+                <span class="node manager"></span>
+                <div><strong>等待输入</strong><small>Manager 将在这里规划调用链路</small></div>
+              </li>
+            </ol>
+
+            <div class="mini-log">
+              <div class="panel-title compact">
+                <span>Activity</span>
+              </div>
+              <div id="activityLog">
+                <p class="log-line"><span>Ready</span> Farm Studio 已就绪</p>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section class="view" id="view-review">
+          <div class="quiet-window">
+            <div class="window-heading">
+              <span class="eyebrow">Daily Review</span>
+              <h2>今日复习农场</h2>
+            </div>
+            <div class="review-grid">
+              <article class="review-card weak">
+                <span class="crop-icon"></span>
+                <h3>Redis 锁续期</h3>
+                <p>来源：mock weakness + local memory</p>
+                <meter value="0.34" max="1"></meter>
+              </article>
+              <article class="review-card mid">
+                <span class="crop-icon"></span>
+                <h3>MVCC 可见性</h3>
+                <p>来源：QA uncertain</p>
+                <meter value="0.56" max="1"></meter>
+              </article>
+              <article class="review-card good">
+                <span class="crop-icon"></span>
+                <h3>TCP 挥手</h3>
+                <p>来源：scheduled review</p>
+                <meter value="0.78" max="1"></meter>
+              </article>
+            </div>
+            <div class="review-note">
+              <strong>设计方向</strong>
+              <p>个人复习进度、streak、掌握度雷达图和今日任务都会放在这里，不再挤在主聊天页。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-files">
+          <div class="quiet-window files-window">
+            <div class="window-heading">
+              <span class="eyebrow">Memory & Files</span>
+              <h2>历史文件与记忆</h2>
+            </div>
+            <div class="files-layout">
+              <aside class="file-list" id="fileList">
+                <button class="file-row active">Loading files...</button>
+              </aside>
+              <article class="file-preview" id="filePreview">
+                <h3>Markdown Preview</h3>
+                <p>选择左侧文件查看生成的学习计划、诊断报告和记忆记录。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <span>Mode: <strong id="statusMode">QA</strong></span>
+        <span>Session: <strong id="sessionId">ui-default</strong></span>
+        <span>Graph: START -> manager_plan -> manager_execute -> manager_aggregate</span>
+      </footer>
+    </div>
+
+    <script src="/ui-static/app.js"></script>
+  </body>
+</html>

@@ -60,6 +60,7 @@ class MainState(TypedDict, total=False):
     responses: List[Dict[str, Any]] # 各 worker 的 ResponsePayload（序列化）
     replan_count: int
     _meta: Dict[str, Any]           # 复合编排决策（skipped_modify / suggest_mock…）
+    _dynamic: bool                  # True=本轮走 Manager 动态规划（decide_next 循环）
 
     # 输出（对用户）
     reply_text: Optional[str]

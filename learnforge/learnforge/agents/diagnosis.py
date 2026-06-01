@@ -23,14 +23,52 @@ from ..contracts.agents.diagnosis import (
     WeakAtom,
 )
 from ..contracts.enums import AgentId, EventType
-from ..mastery import effective_mastery
+from ..llm.client import LLM
+from ..mcp import tools as _toolmod
+from ..skills.registry import SKILL_REGISTRY
 from .base import BaseAgent
+from .react.loop import ReactRunner
 
 # 弱点判定阈值与衰减常数
 _RECENCY_LAMBDA = 0.05   # recency_weight = exp(-λ * age_days)
 _WEAK_MASTERY_MAX = 0.6  # 有效掌握 < 0.6 视为候选弱点
 _TOP_N = 5
 _MIN_EVENTS_FULL_CONF = 12  # 达到该事件量给满置信
+
+# 诊断工具(在 tools/ 框架真执行)给模型看的参数 schema——供 LLM 自主 tool-calling。
+_DIAG_TOOLS = [
+    "diagnosis.search_events", "diagnosis.get_mastery_snapshot",
+    "diagnosis.search_qa_history", "diagnosis.search_mock_turns",
+    "diagnosis.retrieve_knowledge", "diagnosis.analyze_code_static",
+]
+_toolmod.register_schema("diagnosis.search_events",
+    {"type": "object", "properties": {
+        "time_window": {"type": "string", "enum": ["7d", "30d", "all"]},
+        "focus_topics": {"type": "array", "items": {"type": "string"}}}},
+    "读取交互事件作为弱点证据(按时间窗/主题)。")
+_toolmod.register_schema("diagnosis.get_mastery_snapshot",
+    {"type": "object", "properties": {"atom_ids": {"type": "array", "items": {"type": "string"}}},
+     "required": ["atom_ids"]}, "读取指定 atom 的有效掌握度。")
+_toolmod.register_schema("diagnosis.search_qa_history",
+    {"type": "object", "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
+     "required": ["query"]}, "检索本地问答历史作为证据。")
+_toolmod.register_schema("diagnosis.search_mock_turns",
+    {"type": "object", "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
+     "required": ["query"]}, "检索本地模拟面试记录作为证据。")
+_toolmod.register_schema("diagnosis.retrieve_knowledge",
+    {"type": "object", "properties": {"query": {"type": "string"},
+        "scopes": {"type": "array", "items": {"type": "string"}}, "top_k": {"type": "integer"}},
+     "required": ["query"]}, "检索共享/本地知识为诊断补充背景。")
+_toolmod.register_schema("diagnosis.analyze_code_static",
+    {"type": "object", "properties": {"code": {"type": "string"}, "language": {"type": "string"}},
+     "required": ["code"]}, "对用户代码做确定性静态分析。")
+
+_DIAG_REACT_SYSTEM = (
+    "你是学习诊断师（只读，绝不改路径/atom）。用工具自主收集证据后给复习建议：\n"
+    "先 diagnosis.search_events 取信号；按需 get_mastery_snapshot/search_mock_turns/"
+    "search_qa_history/retrieve_knowledge 补证据；用户给了代码可 analyze_code_static。\n"
+    "最后用 ≤3 条按优先级、简短、可执行的中文复习建议作答。弱点打分由系统确定性计算，你只需聚证据+给建议。"
+)
 
 
 class _ReActStep:
@@ -57,52 +95,116 @@ class DiagnosisAgent(BaseAgent):
 
     # ------------------------------------------------------------------ run
     def run(self, payload: DiagnosisInput) -> DiagnosisResult:
-        trace: List[_ReActStep] = []
+        selected = SKILL_REGISTRY.select(
+            self.agent_id,
+            intent="diagnose",
+            event=payload.trigger.value,
+            text=" ".join(payload.focus_topics),
+        )
+        if selected:
+            self.skill = selected[0]
+        # LLM 自主 ReAct（模型自己决定调哪些诊断工具）；降级/不可用 → 确定性兜底。
+        if LLM.available and self.skill is not None:
+            out = self._run_react(payload)
+            if out is not None:
+                return out
+        return self._run_deterministic(payload)
 
-        # ── 段①：LOAD_EVENTS ───────────────────────────────────────────
+    # ------------------------------- LLM 自主 ReAct（驱动 tools/ 诊断工具）
+    def _run_react(self, payload: DiagnosisInput) -> Optional[DiagnosisResult]:
+        events_sink: List[dict] = []
+
+        def _mk(name: str):
+            def handler(args: dict) -> dict:
+                a = dict(args)
+                a.setdefault("db_path", self._db_path)
+                tr = self.call_tool(name, a)  # 经 tool_runtime（含权限门）执行 tools/ 工具
+                if name == "diagnosis.search_events" and isinstance(tr.data, dict):
+                    events_sink.extend(tr.data.get("events") or [])
+                out = {"ok": tr.ok, "observation": tr.observation}
+                if isinstance(tr.data, dict):
+                    out.update(tr.data)
+                return out
+            return handler
+
+        tools = [t for t in _DIAG_TOOLS if self.has_tool(t)]
+        handlers = {t: _mk(t) for t in tools}
+        win = payload.time_window.value
+        focus = "、".join(payload.focus_topics) if payload.focus_topics else "（全部）"
+        system = (self.skill.spec.system_prompt if self.skill else "") or _DIAG_REACT_SYSTEM
+        res = ReactRunner(max_steps=4).run(
+            self,
+            user_prompt=f"诊断学习薄弱点。时间窗={win}，关注主题={focus}。先取证据再给复习建议。",
+            tool_names=tools, system=system, handlers=handlers,
+        )
+        if res.degraded and not res.text:
+            return None  # 降级 → 确定性兜底
+
+        # 关键打分用确定性计算（可靠）：用 ReAct 采到的 events（或确定性补载）聚类。
+        trace: List[_ReActStep] = []
+        events = events_sink or self._act_load_events(payload, trace)
+        if not events:
+            return DiagnosisResult(
+                weak_atoms=[], clusters=[],
+                recommendations=["数据不足：近窗内无交互事件，建议先做一次模拟面试或问答采集信号。"],
+                confidence=0.0,
+            )
+        topic_stats, atom_stats = self._act_join_mastery(events, trace)
+        weak_atoms, clusters = self._act_cluster_rank(topic_stats, atom_stats, trace)
+        # 建议用确定性结构化生成（clean ≤3 条 + 模板兜底），不直接抓模型自由文本（会带 markdown 标题/前言）。
+        recs = self._reason_recommendations(clusters, weak_atoms)
+        self.last_react_trace = res.trace
+        return DiagnosisResult(weak_atoms=weak_atoms, clusters=clusters,
+                               recommendations=recs, confidence=self._estimate_confidence(events, clusters))
+
+    @staticmethod
+    def _parse_recs(text: str) -> List[str]:
+        """从 ReAct 最终文本抽 ≤3 条建议（去掉项目符号/编号）。"""
+        import re as _re
+        out: List[str] = []
+        for line in (text or "").splitlines():
+            s = _re.sub(r"^\s*([-*•]|\d+[.)、])\s*", "", line).strip()
+            if len(s) >= 4:
+                out.append(s)
+        return out[:3]
+
+    # ------------------------------- 确定性兜底（原 3 段式）
+    def _run_deterministic(self, payload: DiagnosisInput) -> DiagnosisResult:
+        trace: List[_ReActStep] = []
         events = self._act_load_events(payload, trace)
         if not events:
-            # 数据不足：如实声明低置信（Design §3.13 / §5.5 异常①）。
             self.last_react_trace = [s.as_dict() for s in trace]
             return DiagnosisResult(
                 weak_atoms=[], clusters=[],
                 recommendations=["数据不足：近窗内无交互事件，建议先做一次模拟面试或问答采集信号。"],
                 confidence=0.0,
             )
-
-        # ── 段②：JOIN_MASTERY ─────────────────────────────────────────
         topic_stats, atom_stats = self._act_join_mastery(events, trace)
-
-        # ── 段③：CLUSTER_RANK ─────────────────────────────────────────
         weak_atoms, clusters = self._act_cluster_rank(topic_stats, atom_stats, trace)
-
         recommendations = self._reason_recommendations(clusters, weak_atoms)
         confidence = self._estimate_confidence(events, clusters)
-
         self.last_react_trace = [s.as_dict() for s in trace]
-        return DiagnosisResult(
-            weak_atoms=weak_atoms,
-            clusters=clusters,
-            recommendations=recommendations,
-            confidence=confidence,
-        )
+        return DiagnosisResult(weak_atoms=weak_atoms, clusters=clusters,
+                               recommendations=recommendations, confidence=confidence)
 
     # ----------------------------------------------------------- 段① events
     def _act_load_events(self, payload: DiagnosisInput, trace: List[_ReActStep]) -> List[dict]:
         events: List[dict] = []
         try:
-            from ..storage.repositories import EventRepository
-
-            repo = EventRepository(db_path=self._db_path)
-            events = repo.list_window_dicts(payload.time_window.value)
+            result = self.call_tool(
+                "diagnosis.search_events",
+                {
+                    "db_path": self._db_path,
+                    "time_window": payload.time_window.value,
+                    "focus_topics": payload.focus_topics,
+                },
+            )
+            events = list((result.data or {}).get("events", []))
         except Exception:
             events = []
-        if payload.focus_topics:
-            focus = set(payload.focus_topics)
-            events = [e for e in events if e.get("topic") in focus]
         trace.append(_ReActStep(
             thought=f"需要 {payload.time_window.value} 窗内的弱点信号，按 focus_topics 过滤。",
-            action=f"EventRepository.list_window_dicts({payload.time_window.value})",
+            action=f"tool:diagnosis.search_events(time_window={payload.time_window.value})",
             observation=f"取得 {len(events)} 条事件。",
         ))
         return events
@@ -136,29 +238,25 @@ class DiagnosisAgent(BaseAgent):
         # join 掌握度（缺失则按"仅频次"，effective=0 → (1-eff)=1，Design §5.5 异常②）。
         joined = 0
         try:
-            from ..storage.repositories import AtomRepository
-
-            atom_repo: Optional[AtomRepository] = AtomRepository(db_path=self._db_path)
+            result = self.call_tool(
+                "diagnosis.get_mastery_snapshot",
+                {"db_path": self._db_path, "atom_ids": list(atom_stats.keys())},
+            )
+            mastery_rows = (result.data or {}).get("atoms", {})
         except Exception:
-            atom_repo = None
+            mastery_rows = {}
         for aid, st in atom_stats.items():
             eff = 0.0
-            if atom_repo is not None:
-                try:
-                    atom = atom_repo.get(aid)
-                except Exception:
-                    atom = None
-                if atom is not None:
-                    eff = effective_mastery(
-                        atom.mastery_score, atom.decay_rate, atom.last_reviewed_at, now
-                    )
-                    st["topic"] = atom.topic
-                    joined += 1
+            atom = mastery_rows.get(aid)
+            if atom is not None:
+                eff = float(atom.get("effective_mastery", 0.0))
+                st["topic"] = atom.get("topic") or st["topic"]
+                joined += 1
             st["effective_mastery"] = eff
 
         trace.append(_ReActStep(
             thought="对涉及 atom 读掌握度并计 effective（时间遗忘）；缺失则仅按频次。",
-            action=f"AtomRepository.get x{len(atom_stats)}",
+            action=f"tool:diagnosis.get_mastery_snapshot x{len(atom_stats)}",
             observation=f"弱点话题 {len(topic_stats)} 个、atom {len(atom_stats)} 个，命中掌握度 {joined} 个。",
         ))
         return topic_stats, atom_stats

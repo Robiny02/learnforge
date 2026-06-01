@@ -1,0 +1,198 @@
+{
+  "_readme": [
+    "Diagnosis golden set（T-EV-08 / Design §9c）——伪造 interaction_events 的用户档案 + 人工标注弱点。",
+    "不依赖知识语料库（chunks/atoms 检索语料）；只塞交互事件 + 可选 atom 掌握度。",
+    "编码（紧凑数组，省体积，由 diagnosis_eval.py 解码）：",
+    "  atoms : [atom_id, topic, mastery_score]",
+    "  events: [kind, topic, [atom_refs]]  其中 kind ∈ {mock, qa_bad, qa_unverified, qa_good}",
+    "    mock          -> MOCK_WEAKNESS, signal{weak:true}        （恒为弱点信号）",
+    "    qa_bad        -> QA_SIGNAL,     signal{correct:false}    （弱点信号）",
+    "    qa_unverified -> QA_SIGNAL,     signal{verdict:unverified}（弱点信号）",
+    "    qa_good       -> QA_SIGNAL,     signal{correct:true}     （干扰项：非弱点，不应被标记）",
+    "  expected        : 人工标注的弱点话题（cluster 级 Recall@5 的 ground truth）",
+    "  expected_atoms  : 可选，人工标注的弱点 atom（weak_atom 级 recall 的 ground truth）",
+    "簇 severity ∝ recency*error_freq，recency≈1（事件均近窗）→ 排序≈按弱点事件频次。",
+    "expected=[] 为负样本：诊断应返回空簇（测精确率/不臆造）。"
+  ],
+  "profiles": [
+    {"id": "p01", "desc": "并发单点弱项（mock 反复失分）",
+     "atoms": [["c1", "concurrency", 0.15]],
+     "events": [["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]]],
+     "expected": ["concurrency"], "expected_atoms": ["c1"]},
+
+    {"id": "p02", "desc": "数据库单点弱项",
+     "atoms": [["db1", "database", 0.2]],
+     "events": [["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]]],
+     "expected": ["database"], "expected_atoms": ["db1"]},
+
+    {"id": "p03", "desc": "JVM 弱项（mock + 一次问答错）",
+     "atoms": [["jvm1", "jvm", 0.3]],
+     "events": [["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["qa_bad", "jvm", ["jvm1"]]],
+     "expected": ["jvm"], "expected_atoms": ["jvm1"]},
+
+    {"id": "p04", "desc": "网络弱项（纯问答信号）",
+     "atoms": [],
+     "events": [["qa_bad", "network", ["net1"]], ["qa_bad", "network", ["net1"]], ["qa_bad", "network", ["net1"]]],
+     "expected": ["network"]},
+
+    {"id": "p05", "desc": "算法弱项（高频 mock）",
+     "atoms": [["algo1", "algorithm", 0.1]],
+     "events": [["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]]],
+     "expected": ["algorithm"], "expected_atoms": ["algo1"]},
+
+    {"id": "p06", "desc": "操作系统弱项",
+     "atoms": [["os1", "os", 0.25]],
+     "events": [["mock", "os", ["os1"]], ["mock", "os", ["os1"]]],
+     "expected": ["os"]},
+
+    {"id": "p07", "desc": "分布式弱项",
+     "atoms": [["dist1", "distributed", 0.2]],
+     "events": [["mock", "distributed", ["dist1"]], ["mock", "distributed", ["dist1"]], ["mock", "distributed", ["dist1"]]],
+     "expected": ["distributed"]},
+
+    {"id": "p08", "desc": "缓存弱项（unverified + mock）",
+     "atoms": [["cache1", "cache", 0.35]],
+     "events": [["qa_unverified", "cache", ["cache1"]], ["qa_unverified", "cache", ["cache1"]], ["mock", "cache", ["cache1"]]],
+     "expected": ["cache"]},
+
+    {"id": "p09", "desc": "消息队列弱项",
+     "atoms": [["mq1", "mq", 0.3]],
+     "events": [["mock", "mq", ["mq1"]], ["mock", "mq", ["mq1"]], ["mock", "mq", ["mq1"]]],
+     "expected": ["mq"]},
+
+    {"id": "p10", "desc": "安全弱项（问答错）",
+     "atoms": [],
+     "events": [["qa_bad", "security", ["sec1"]], ["qa_bad", "security", ["sec1"]]],
+     "expected": ["security"]},
+
+    {"id": "p11", "desc": "双弱项，并发重于数据库",
+     "atoms": [["c1", "concurrency", 0.15], ["db1", "database", 0.3]],
+     "events": [["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]]],
+     "expected": ["concurrency", "database"], "expected_atoms": ["c1", "db1"]},
+
+    {"id": "p12", "desc": "三弱项（jvm/gc/network）",
+     "atoms": [["jvm1", "jvm", 0.2], ["gc1", "gc", 0.2], ["net1", "network", 0.3]],
+     "events": [["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "network", ["net1"]]],
+     "expected": ["jvm", "gc", "network"]},
+
+    {"id": "p13", "desc": "算法重，数据库轻（mock + qa）",
+     "atoms": [["algo1", "algorithm", 0.1], ["db1", "database", 0.4]],
+     "events": [["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["qa_bad", "database", ["db1"]], ["qa_bad", "database", ["db1"]]],
+     "expected": ["algorithm", "database"]},
+
+    {"id": "p14", "desc": "三弱项（分布式/缓存/消息队列）",
+     "atoms": [],
+     "events": [["mock", "distributed", ["dist1"]], ["mock", "distributed", ["dist1"]], ["mock", "distributed", ["dist1"]], ["mock", "cache", ["cache1"]], ["mock", "cache", ["cache1"]], ["mock", "mq", ["mq1"]], ["mock", "mq", ["mq1"]]],
+     "expected": ["distributed", "cache", "mq"]},
+
+    {"id": "p15", "desc": "双弱项（os/network 均势）",
+     "atoms": [],
+     "events": [["mock", "os", ["os1"]], ["mock", "os", ["os1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]]],
+     "expected": ["os", "network"]},
+
+    {"id": "p16", "desc": "安全重，数据库轻",
+     "atoms": [],
+     "events": [["mock", "security", ["sec1"]], ["mock", "security", ["sec1"]], ["mock", "security", ["sec1"]], ["mock", "database", ["db1"]]],
+     "expected": ["security", "database"]},
+
+    {"id": "p17", "desc": "网络弱项（qa 混合）",
+     "atoms": [],
+     "events": [["qa_bad", "network", ["net1"]], ["qa_bad", "network", ["net1"]], ["qa_bad", "network", ["net1"]], ["qa_unverified", "network", ["net1"]]],
+     "expected": ["network"]},
+
+    {"id": "p18", "desc": "数据库弱项（全 unverified）",
+     "atoms": [["db1", "database", 0.3]],
+     "events": [["qa_unverified", "database", ["db1"]], ["qa_unverified", "database", ["db1"]], ["qa_unverified", "database", ["db1"]]],
+     "expected": ["database"], "expected_atoms": ["db1"]},
+
+    {"id": "p19", "desc": "JVM 弱项（qa + mock）",
+     "atoms": [["jvm1", "jvm", 0.25]],
+     "events": [["qa_bad", "jvm", ["jvm1"]], ["qa_bad", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]]],
+     "expected": ["jvm"]},
+
+    {"id": "p20", "desc": "缓存弱项（高频 qa 错）",
+     "atoms": [],
+     "events": [["qa_bad", "cache", ["cache1"]], ["qa_bad", "cache", ["cache1"]], ["qa_bad", "cache", ["cache1"]], ["qa_bad", "cache", ["cache1"]]],
+     "expected": ["cache"]},
+
+    {"id": "p21", "desc": "干扰：并发弱 + 数据库全对（database 不应入簇）",
+     "atoms": [["c1", "concurrency", 0.15], ["db1", "database", 0.9]],
+     "events": [["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]]],
+     "expected": ["concurrency"], "expected_atoms": ["c1"]},
+
+    {"id": "p22", "desc": "干扰：jvm 弱 + network 全对",
+     "atoms": [],
+     "events": [["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["qa_good", "network", ["net1"]], ["qa_good", "network", ["net1"]], ["qa_good", "network", ["net1"]]],
+     "expected": ["jvm"]},
+
+    {"id": "p23", "desc": "干扰：算法弱 + os/cache 全对",
+     "atoms": [],
+     "events": [["qa_bad", "algorithm", ["algo1"]], ["qa_bad", "algorithm", ["algo1"]], ["qa_bad", "algorithm", ["algo1"]], ["qa_good", "os", ["os1"]], ["qa_good", "os", ["os1"]], ["qa_good", "cache", ["cache1"]], ["qa_good", "cache", ["cache1"]]],
+     "expected": ["algorithm"]},
+
+    {"id": "p24", "desc": "干扰：消息队列弱 + 分布式全对",
+     "atoms": [],
+     "events": [["mock", "mq", ["mq1"]], ["mock", "mq", ["mq1"]], ["qa_good", "distributed", ["dist1"]], ["qa_good", "distributed", ["dist1"]], ["qa_good", "distributed", ["dist1"]]],
+     "expected": ["mq"]},
+
+    {"id": "p25", "desc": "硬：6 弱项全标注，top5 截断（cache 频次最低被截）→ recall 5/6",
+     "atoms": [],
+     "events": [["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]], ["mock", "os", ["os1"]], ["mock", "os", ["os1"]], ["mock", "cache", ["cache1"]]],
+     "expected": ["concurrency", "database", "jvm", "network", "os", "cache"]},
+
+    {"id": "p26", "desc": "硬：7 话题但只标注高频前 3（应稳入 top5）→ recall 1.0",
+     "atoms": [],
+     "events": [["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "algorithm", ["algo1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]], ["mock", "os", ["os1"]], ["mock", "os", ["os1"]], ["mock", "cache", ["cache1"]], ["mock", "mq", ["mq1"]]],
+     "expected": ["algorithm", "database", "jvm"]},
+
+    {"id": "p27", "desc": "硬：6 弱项全标注，security 频次最低被截 → recall 5/6",
+     "atoms": [],
+     "events": [["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "gc", ["gc1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "jvm", ["jvm1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "database", ["db1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]], ["mock", "network", ["net1"]], ["mock", "security", ["sec1"]]],
+     "expected": ["gc", "jvm", "concurrency", "database", "network", "security"]},
+
+    {"id": "p28", "desc": "负样本：无任何事件 → 空簇 + 零置信",
+     "atoms": [],
+     "events": [],
+     "expected": []},
+
+    {"id": "p29", "desc": "负样本：全部答对（无弱点信号）→ 空簇",
+     "atoms": [],
+     "events": [["qa_good", "concurrency", ["c1"]], ["qa_good", "database", ["db1"]], ["qa_good", "jvm", ["jvm1"]], ["qa_good", "network", ["net1"]]],
+     "expected": []},
+
+    {"id": "p30", "desc": "负样本：单条答对",
+     "atoms": [],
+     "events": [["qa_good", "algorithm", ["algo1"]]],
+     "expected": []},
+
+    {"id": "p31", "desc": "硬·时间衰减：近期 2 次错应胜过 120 天前的 6 次错（rank-1 判别）",
+     "atoms": [],
+     "events": [["mock", "concurrency", ["c1"], 1], ["mock", "concurrency", ["c1"], 1], ["mock", "database", ["db1"], 120], ["mock", "database", ["db1"], 120], ["mock", "database", ["db1"], 120], ["mock", "database", ["db1"], 120], ["mock", "database", ["db1"], 120], ["mock", "database", ["db1"], 120]],
+     "expected": ["concurrency", "database"], "expected_rank1": "concurrency"},
+
+    {"id": "p32", "desc": "硬·掌握度过滤：高掌握 atom(0.9) 偶错一次不应入弱点 atom（精确率）",
+     "atoms": [["mastered1", "jvm", 0.9], ["weak1", "jvm", 0.15]],
+     "events": [["mock", "jvm", ["mastered1"]], ["mock", "jvm", ["weak1"]], ["mock", "jvm", ["weak1"]]],
+     "expected": ["jvm"], "expected_atoms": ["weak1"], "forbidden_atoms": ["mastered1"]},
+
+    {"id": "p33", "desc": "硬·衰减复活：存储掌握 0.8 但 60 天未复习 → effective≈0.04 应被标为弱点 atom",
+     "atoms": [["stale1", "cache", 0.8, 60]],
+     "events": [["mock", "cache", ["stale1"]], ["mock", "cache", ["stale1"]]],
+     "expected": ["cache"], "expected_atoms": ["stale1"]},
+
+    {"id": "p34", "desc": "硬·精确率：1 弱项 + 2 个全答对的干扰话题（干扰项不得入簇）",
+     "atoms": [],
+     "events": [["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["mock", "concurrency", ["c1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "database", ["db1"]], ["qa_good", "network", ["net1"]], ["qa_good", "network", ["net1"]], ["qa_good", "network", ["net1"]], ["qa_good", "network", ["net1"]]],
+     "expected": ["concurrency"], "forbidden_topics": ["database", "network"]},
+
+    {"id": "p35", "desc": "硬·衰减截断：5 个近期弱项 + 1 个陈旧弱项(legacy)被挤出 top5 → recall 5/6",
+     "atoms": [],
+     "events": [["mock", "concurrency", ["c1"], 1], ["mock", "concurrency", ["c1"], 1], ["mock", "concurrency", ["c1"], 1], ["mock", "database", ["db1"], 1], ["mock", "database", ["db1"], 1], ["mock", "database", ["db1"], 1], ["mock", "jvm", ["jvm1"], 1], ["mock", "jvm", ["jvm1"], 1], ["mock", "jvm", ["jvm1"], 1], ["mock", "network", ["net1"], 1], ["mock", "network", ["net1"], 1], ["mock", "network", ["net1"], 1], ["mock", "os", ["os1"], 1], ["mock", "os", ["os1"], 1], ["mock", "os", ["os1"], 1], ["mock", "security", ["sec1"], 100], ["mock", "security", ["sec1"], 100], ["mock", "security", ["sec1"], 100], ["mock", "security", ["sec1"], 100], ["mock", "security", ["sec1"], 100]],
+     "expected": ["concurrency", "database", "jvm", "network", "os", "security"]},
+
+    {"id": "p36", "desc": "已知局限(文档化)：算法按弱点事件频次而非错误率——popular(8对1错) 与 niche(1错) 同等 severity",
+     "atoms": [],
+     "events": [["qa_bad", "niche", ["n1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_good", "popular", ["pop1"]], ["qa_bad", "popular", ["pop1"]]],
+     "expected": ["niche", "popular"]}
+  ]
+}

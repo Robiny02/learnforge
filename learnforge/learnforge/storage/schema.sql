@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     text            TEXT NOT NULL,
     source_type     TEXT NOT NULL DEFAULT 'atom'
         CHECK (source_type IN ('interview_post','blog','doc','atom')),
+    kb_scope        TEXT NOT NULL DEFAULT 'shared'   -- 双层：local/shared（共享知识库默认 shared）
+        CHECK (kb_scope IN ('local','shared')),
     topic           TEXT,
     parent_chunk_id TEXT,                            -- 父子 chunk（面经）
     atom_refs       TEXT NOT NULL DEFAULT '[]',      -- JSON array
@@ -52,6 +54,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_source_topic
     ON chunks (source_type, topic);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_scope
+    ON chunks (kb_scope, topic);
 
 -- ===========================================================================
 -- 3) 向量索引（sqlite-vec vec0，Design §4c / §7a，dim=1024）
@@ -161,6 +166,36 @@ CREATE TABLE IF NOT EXISTS mock_turns (
 
 CREATE INDEX IF NOT EXISTS idx_mock_turns_session
     ON mock_turns (session_id, turn_index);
+
+-- ===========================================================================
+-- 7b) 历史问答（本地用户库，可检索；供 LocalUserSource 召回个人问答历史）
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS qa_history (
+    qa_id      TEXT PRIMARY KEY,
+    question   TEXT NOT NULL,
+    answer     TEXT,
+    topic      TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS qa_history_fts USING fts5 (
+    qa_id UNINDEXED,
+    question,
+    answer,
+    tokenize = 'porter unicode61'
+);
+
+-- ===========================================================================
+-- 7c) 短期会话记忆（跨轮连续性）：每 session 的滚动摘要 + 当前任务态。
+--     长期记忆走 chunks/向量库,这里只放轻量、易变的会话态(单写者 Manager 收口)。
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS session_state (
+    session_id      TEXT PRIMARY KEY,
+    summary         TEXT NOT NULL DEFAULT '',         -- 更旧消息压缩成的会话摘要
+    recent_messages TEXT NOT NULL DEFAULT '[]',       -- JSON array，最近 N 轮 {user, reply} 原文
+    active_task     TEXT NOT NULL DEFAULT '{}',        -- JSON object（active_mock 等）
+    updated_at      TEXT NOT NULL
+);
 
 -- ===========================================================================
 -- 8) 诊断快照（只读 agent 产出，由 Manager 落，Design §4c）

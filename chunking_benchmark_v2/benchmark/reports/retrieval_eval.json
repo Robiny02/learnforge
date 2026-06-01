@@ -1,0 +1,791 @@
+{
+  "k": 5,
+  "results": {
+    "fixed": {
+      "skipped": false,
+      "degraded": false,
+      "per_query": [
+        {
+          "query_id": "q_xhs_001_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_technical_extraction",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_002_01",
+          "source": "xiaohongshu",
+          "difficulty": "fact",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.75,
+          "kw_recall@k_parent": 0.75
+        },
+        {
+          "query_id": "q_xhs_006_01",
+          "source": "xiaohongshu",
+          "difficulty": "off_topic_detection",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.5,
+          "kw_recall@k": 0.6,
+          "kw_recall@k_parent": 0.6
+        },
+        {
+          "query_id": "q_xhs_008_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_noise_filter",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_009_01",
+          "source": "xiaohongshu",
+          "difficulty": "comment_mixed_signal",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_001_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_002_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.4,
+          "kw_recall@k_parent": 0.4
+        },
+        {
+          "query_id": "q_xiaolin_003_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_004_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_005_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_mcp_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 0.667,
+          "kw_recall@k_parent": 0.667
+        },
+        {
+          "query_id": "q_gh_sandbox_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.2,
+          "kw_recall@k": 0.167,
+          "kw_recall@k_parent": 0.167
+        },
+        {
+          "query_id": "q_gh_multiagent_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 1.0,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_context_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.6,
+          "kw_recall@k_parent": 0.6
+        }
+      ]
+    },
+    "llamaindex": {
+      "skipped": false,
+      "degraded": false,
+      "per_query": [
+        {
+          "query_id": "q_xhs_001_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_technical_extraction",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.833,
+          "kw_recall@k_parent": 0.833
+        },
+        {
+          "query_id": "q_xhs_002_01",
+          "source": "xiaohongshu",
+          "difficulty": "fact",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.75,
+          "kw_recall@k_parent": 0.75
+        },
+        {
+          "query_id": "q_xhs_006_01",
+          "source": "xiaohongshu",
+          "difficulty": "off_topic_detection",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.6,
+          "kw_recall@k_parent": 0.6
+        },
+        {
+          "query_id": "q_xhs_008_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_noise_filter",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_009_01",
+          "source": "xiaohongshu",
+          "difficulty": "comment_mixed_signal",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_001_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_002_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 0.8,
+          "kw_recall@k_parent": 0.8
+        },
+        {
+          "query_id": "q_xiaolin_003_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_004_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_005_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_mcp_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 0.667,
+          "kw_recall@k_parent": 0.667
+        },
+        {
+          "query_id": "q_gh_sandbox_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 0.333,
+          "kw_recall@k_parent": 0.333
+        },
+        {
+          "query_id": "q_gh_multiagent_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 1.0,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_context_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 0.5,
+          "kw_recall@k": 0.6,
+          "kw_recall@k_parent": 0.6
+        }
+      ]
+    },
+    "semantic": {
+      "skipped": false,
+      "degraded": false,
+      "per_query": [
+        {
+          "query_id": "q_xhs_001_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_technical_extraction",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_002_01",
+          "source": "xiaohongshu",
+          "difficulty": "fact",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.75,
+          "kw_recall@k_parent": 0.75
+        },
+        {
+          "query_id": "q_xhs_006_01",
+          "source": "xiaohongshu",
+          "difficulty": "off_topic_detection",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 0.4,
+          "kw_recall@k_parent": 0.4
+        },
+        {
+          "query_id": "q_xhs_008_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_noise_filter",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.5,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_009_01",
+          "source": "xiaohongshu",
+          "difficulty": "comment_mixed_signal",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.25,
+          "kw_recall@k_parent": 0.25
+        },
+        {
+          "query_id": "q_xiaolin_001_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.5,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_002_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.5,
+          "kw_recall@k": 0.2,
+          "kw_recall@k_parent": 0.2
+        },
+        {
+          "query_id": "q_xiaolin_003_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_004_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_005_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_mcp_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.5,
+          "kw_recall@k": 0.333,
+          "kw_recall@k_parent": 0.333
+        },
+        {
+          "query_id": "q_gh_sandbox_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.2,
+          "kw_recall@k": 0.167,
+          "kw_recall@k_parent": 0.167
+        },
+        {
+          "query_id": "q_gh_multiagent_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.8,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_context_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.6,
+          "kw_recall@k_parent": 0.6
+        }
+      ]
+    },
+    "structural": {
+      "skipped": false,
+      "degraded": false,
+      "per_query": [
+        {
+          "query_id": "q_xhs_001_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_technical_extraction",
+          "top_doc_correct": 0.0,
+          "hit@k": 0.0,
+          "precision@k": 0.0,
+          "mrr": 0.167,
+          "kw_recall@k": 0.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_002_01",
+          "source": "xiaohongshu",
+          "difficulty": "fact",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.75,
+          "kw_recall@k_parent": 0.75
+        },
+        {
+          "query_id": "q_xhs_006_01",
+          "source": "xiaohongshu",
+          "difficulty": "off_topic_detection",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.333,
+          "kw_recall@k": 0.2,
+          "kw_recall@k_parent": 0.6
+        },
+        {
+          "query_id": "q_xhs_008_01",
+          "source": "xiaohongshu",
+          "difficulty": "ocr_noise_filter",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.25,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xhs_009_01",
+          "source": "xiaohongshu",
+          "difficulty": "comment_mixed_signal",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.25,
+          "kw_recall@k_parent": 0.75
+        },
+        {
+          "query_id": "q_xiaolin_001_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 0.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.5,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_002_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.2,
+          "kw_recall@k_parent": 0.2
+        },
+        {
+          "query_id": "q_xiaolin_003_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.6,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_004_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 0.333,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_xiaolin_005_01",
+          "source": "xiaolin_coding_style_blog",
+          "difficulty": "structured_blog",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 0.833,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_mcp_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.25,
+          "kw_recall@k": 0.333,
+          "kw_recall@k_parent": 0.5
+        },
+        {
+          "query_id": "q_gh_sandbox_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 0.25,
+          "kw_recall@k": 0.167,
+          "kw_recall@k_parent": 0.333
+        },
+        {
+          "query_id": "q_gh_multiagent_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.4,
+          "mrr": 1.0,
+          "kw_recall@k": 1.0,
+          "kw_recall@k_parent": 1.0
+        },
+        {
+          "query_id": "q_gh_context_01",
+          "source": "github_md",
+          "difficulty": "structured_md",
+          "top_doc_correct": 1.0,
+          "hit@k": 1.0,
+          "precision@k": 0.2,
+          "mrr": 1.0,
+          "kw_recall@k": 0.2,
+          "kw_recall@k_parent": 0.8
+        }
+      ]
+    }
+  },
+  "table": {
+    "fixed/ALL": {
+      "top_doc_correct": 0.929,
+      "hit@k": 1.0,
+      "precision@k": 0.4,
+      "mrr": 0.907,
+      "kw_recall@k": 0.799,
+      "kw_recall@k_parent": 0.799,
+      "degraded": false
+    },
+    "fixed/github_md": {
+      "top_doc_correct": 1.0,
+      "hit@k": 1.0,
+      "precision@k": 0.55,
+      "mrr": 0.8,
+      "kw_recall@k": 0.609,
+      "kw_recall@k_parent": 0.609,
+      "degraded": false
+    },
+    "fixed/xiaohongshu": {
+      "top_doc_correct": 0.8,
+      "hit@k": 1.0,
+      "precision@k": 0.2,
+      "mrr": 0.9,
+      "kw_recall@k": 0.87,
+      "kw_recall@k_parent": 0.87,
+      "degraded": false
+    },
+    "fixed/xiaolin_coding_style_blog": {
+      "top_doc_correct": 1.0,
+      "hit@k": 1.0,
+      "precision@k": 0.48,
+      "mrr": 1.0,
+      "kw_recall@k": 0.88,
+      "kw_recall@k_parent": 0.88,
+      "degraded": false
+    },
+    "llamaindex/ALL": {
+      "top_doc_correct": 0.857,
+      "hit@k": 1.0,
+      "precision@k": 0.443,
+      "mrr": 0.857,
+      "kw_recall@k": 0.827,
+      "kw_recall@k_parent": 0.827,
+      "degraded": false
+    },
+    "llamaindex/github_md": {
+      "top_doc_correct": 0.75,
+      "hit@k": 1.0,
+      "precision@k": 0.65,
+      "mrr": 0.75,
+      "kw_recall@k": 0.65,
+      "kw_recall@k_parent": 0.65,
+      "degraded": false
+    },
+    "llamaindex/xiaohongshu": {
+      "top_doc_correct": 1.0,
+      "hit@k": 1.0,
+      "precision@k": 0.32,
+      "mrr": 1.0,
+      "kw_recall@k": 0.837,
+      "kw_recall@k_parent": 0.837,
+      "degraded": false
+    },
+    "llamaindex/xiaolin_coding_style_blog": {
+      "top_doc_correct": 0.8,
+      "hit@k": 1.0,
+      "precision@k": 0.4,
+      "mrr": 0.8,
+      "kw_recall@k": 0.96,
+      "kw_recall@k_parent": 0.96,
+      "degraded": false
+    },
+    "semantic/ALL": {
+      "top_doc_correct": 0.714,
+      "hit@k": 1.0,
+      "precision@k": 0.329,
+      "mrr": 0.729,
+      "kw_recall@k": 0.693,
+      "kw_recall@k_parent": 0.693,
+      "degraded": false
+    },
+    "semantic/github_md": {
+      "top_doc_correct": 1.0,
+      "hit@k": 1.0,
+      "precision@k": 0.45,
+      "mrr": 0.675,
+      "kw_recall@k": 0.525,
+      "kw_recall@k_parent": 0.525,
+      "degraded": false
+    },
+    "semantic/xiaohongshu": {
+      "top_doc_correct": 0.8,
+      "hit@k": 1.0,
+      "precision@k": 0.24,
+      "mrr": 0.8,
+      "kw_recall@k": 0.68,
+      "kw_recall@k_parent": 0.68,
+      "degraded": false
+    },
+    "semantic/xiaolin_coding_style_blog": {
+      "top_doc_correct": 0.4,
+      "hit@k": 1.0,
+      "precision@k": 0.32,
+      "mrr": 0.7,
+      "kw_recall@k": 0.84,
+      "kw_recall@k_parent": 0.84,
+      "degraded": false
+    },
+    "structural/ALL": {
+      "top_doc_correct": 0.786,
+      "hit@k": 0.929,
+      "precision@k": 0.257,
+      "mrr": 0.649,
+      "kw_recall@k": 0.567,
+      "kw_recall@k_parent": 0.781,
+      "degraded": false
+    },
+    "structural/github_md": {
+      "top_doc_correct": 1.0,
+      "hit@k": 1.0,
+      "precision@k": 0.25,
+      "mrr": 0.625,
+      "kw_recall@k": 0.425,
+      "kw_recall@k_parent": 0.658,
+      "degraded": false
+    },
+    "structural/xiaohongshu": {
+      "top_doc_correct": 0.6,
+      "hit@k": 0.8,
+      "precision@k": 0.16,
+      "mrr": 0.55,
+      "kw_recall@k": 0.44,
+      "kw_recall@k_parent": 0.82,
+      "degraded": false
+    },
+    "structural/xiaolin_coding_style_blog": {
+      "top_doc_correct": 0.8,
+      "hit@k": 1.0,
+      "precision@k": 0.36,
+      "mrr": 0.767,
+      "kw_recall@k": 0.807,
+      "kw_recall@k_parent": 0.84,
+      "degraded": false
+    }
+  }
+}

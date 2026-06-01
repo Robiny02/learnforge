@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from ..config import DB_PATH
+from ..config import DB_PATH, EMBEDDING_DIM
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -45,6 +45,10 @@ def init_db(db_path: Optional[str] = None) -> None:
     conn = get_connection(db_path)
     has_vec = _try_load_sqlite_vec(conn)
     sql = _SCHEMA_PATH.read_text(encoding="utf-8")
+
+    # 向量维度按 config.EMBEDDING_DIM 注入 vec0 DDL（与 embedding provider 输出对齐）。
+    if EMBEDDING_DIM != 1024:
+        sql = sql.replace("FLOAT[1024]", f"FLOAT[{EMBEDDING_DIM}]")
 
     if not has_vec:
         # 过滤掉 vec0 虚拟表（骨架阶段降级，保证其余 DDL 可建）。

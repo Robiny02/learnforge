@@ -61,8 +61,10 @@ class MockInterviewAgent(BaseAgent):
 
     def start(self, session_id: str, topic: str, difficulty: int = 3,
               max_turns: int = 10) -> MockOutput:
+        self.require_tool("mock.checkpoint")
         if self.mock_repo is not None:
             try:
+                self.require_tool("repository.write.mock_sessions")
                 self.mock_repo.upsert_session(session_id, topic, difficulty, max_turns)
             except Exception:
                 pass
@@ -80,6 +82,7 @@ class MockInterviewAgent(BaseAgent):
 
     def answer(self, session_id: str, user_answer: Optional[str] = None,
                user_interrupt: Optional[str] = None) -> MockOutput:
+        self.require_tool("mock.checkpoint")
         config = {"configurable": {"thread_id": session_id}}
         result = self.graph.invoke(
             Command(resume={"user_answer": user_answer, "user_interrupt": user_interrupt}),

@@ -5,13 +5,97 @@ Phase 1 仅作为常量与查表，不接入真实 client。
 
 from __future__ import annotations
 
+import math
+import os
+from pathlib import Path
 from typing import Dict
 
 from .contracts.enums import AgentId, ModelTier
 
+
+def _load_local_env() -> None:
+    """Load local .env values without requiring python-dotenv."""
+
+    seen = set()
+    for base in [Path.cwd(), *Path(__file__).resolve().parents]:
+        env_path = base / ".env"
+        if env_path in seen or not env_path.exists():
+            continue
+        seen.add(env_path)
+        try:
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        except OSError:
+            continue
+
+
+_load_local_env()
+
 # 数据库
 DB_PATH = "learnforge.db"
-EMBEDDING_DIM = 1024  # Design §7a（1024 vs 1536 待 spike 锁定，DG1）
+
+# ---------------------------------------------------------------------------
+# 记忆系统（OpenClaw 风格：MEMORY.md + daily markdown + 索引召回 + 衰减）
+# ---------------------------------------------------------------------------
+# 记忆文件根目录（运行时目录）：MEMORY.md（稳定规则）+ YYYY-MM-DD.md（每日记录）。
+MEMORY_DIR = os.getenv("LF_MEMORY_DIR", "data/memory")
+# daily 召回时间衰减率 λ（exp(-λ·days)，镜像 mastery.effective_mastery）。
+#   普通每日记录半衰期≈7天；薄弱点/mock 反馈衰减慢，半衰期≈30天。MEMORY.md 不衰减。
+MEMORY_DECAY_FAST = math.log(2) / 7.0
+MEMORY_DECAY_SLOW = math.log(2) / 30.0
+# daily memory 支持的记忆类型（kind）。Agent 判定沉淀；daemon 为后续异步扩展位。
+#   qa=问答总结 weak=薄弱点 mock=mock 反馈 progress=学习进展 decision=阶段性项目决策 note=普通记录
+MEMORY_KINDS = ("qa", "weak", "mock", "progress", "decision", "note")
+# 衰减慢（“黏性”/高重要性）的 note 类型；其余按 FAST。
+#   薄弱点/mock 反馈/学习进展/项目决策都比普通问答更重要，应衰减更慢、召回权重更高（REQUIREMENTS R4.7）。
+MEMORY_STICKY_KINDS = ("weak", "mock", "progress", "decision")
+# 各 kind 的基础重要性 ∈[0,1]，作为召回排序的次要因子（REQUIREMENTS R4.2/R7.3）。
+#   缺省 kind → MEMORY_IMPORTANCE_DEFAULT。
+MEMORY_IMPORTANCE = {
+    "decision": 1.0,
+    "weak": 0.9,
+    "progress": 0.8,
+    "mock": 0.8,
+    "qa": 0.5,
+    "note": 0.4,
+}
+MEMORY_IMPORTANCE_DEFAULT = 0.5
+# session_memory 保留的最近原文轮数；更旧的压成 summary。
+SESSION_RECENT_ROUNDS = 6
+# 记忆召回相似度闸门（仅对 cosine 相似度分数有意义，即 vector/hybrid 模式；
+# FTS 的 RRF 位置分不是相似度，不适用本闸门）。
+#   - MIN_SIM：top1 低于它 → 判“没有找到明确记忆”（不编造）。
+#   - MARGIN：top1-top2 过近 → 不直接采纳，交 rerank / 保守处理。
+# ⚠️ 默认值来自小规模 adversarial eval（n≈16），仅为初始经验值，需更大评测集校准，勿当通用常数。
+MEMORY_RECALL_MIN_SIM = float(os.getenv("LF_MEMORY_RECALL_MIN_SIM", "0.33"))
+MEMORY_RECALL_MARGIN = float(os.getenv("LF_MEMORY_RECALL_MARGIN", "0.05"))
+MEMORY_RECALL_THRESHOLD_SOURCE = "small-scale adversarial eval (n≈16); provisional, recalibrate"
+# PostgreSQL 知识库连接串（可选）。未设置 → 仅用 SQLite 路径（fallback 保留）。
+POSTGRES_DSN = os.getenv("LF_POSTGRES_DSN")
+
+# Embedding / 向量检索（外部 API，可插拔；无 key 时离线降级到 FTS）
+# 维度经 env 覆盖；vec0 schema 按此维度建表，请保持与 provider 输出一致（默认 1024）。
+EMBEDDING_DIM = int(os.getenv("LF_EMBEDDING_DIM", "1024"))
+# provider ∈ {none, openai, voyage}；none（默认）= 离线，不做向量检索。
+EMBEDDING_PROVIDER = os.getenv("LF_EMBEDDING_PROVIDER", "none").lower()
+# OpenAI 兼容端点 base_url（可选）。设了即走该网关，支持 OpenAI 兼容代理（如 OpenRouter：
+#   LF_OPENAI_BASE_URL=https://openrouter.ai/api/v1 + LF_EMBEDDING_MODEL=openai/text-embedding-3-small）。
+OPENAI_BASE_URL = os.getenv("LF_OPENAI_BASE_URL") or None
+# 不同 provider 的默认模型；openai 的 text-embedding-3-* 支持 dimensions 截断到 EMBEDDING_DIM。
+_DEFAULT_EMBEDDING_MODEL = {
+    "openai": "text-embedding-3-small",
+    "voyage": "voyage-3",
+}
+EMBEDDING_MODEL = os.getenv(
+    "LF_EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL.get(EMBEDDING_PROVIDER, "")
+)
 
 # 全局编排上限（Design §3.1 Bounds）
 MAX_REPLAN = 2

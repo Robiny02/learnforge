@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "real-jwt-memory",
+      "query": "我是不是之前总结过登录态防篡改那个点？大概是 token 签名那块",
+      "should_recall": true,
+      "gold": "jwt"
+    },
+    {
+      "name": "real-lock-choice",
+      "query": "面试里如果说读多写少，我当时应该往哪个锁方案上靠？",
+      "should_recall": true,
+      "gold": "optimistic"
+    },
+    {
+      "name": "real-redis-lock",
+      "query": "redis 那个锁续期/watchdog 我是不是还有薄弱点",
+      "should_recall": true,
+      "gold": "redis"
+    },
+    {
+      "name": "real-cache-traffic",
+      "query": "缓存 key 集中过期打到 DB 的问题，我之前怎么记的？",
+      "should_recall": true,
+      "gold": "redis_cache"
+    },
+    {
+      "name": "real-mvcc-version",
+      "query": "read view 判断版本可见性，这个我笔记里怎么写的",
+      "should_recall": true,
+      "gold": "mysql_mvcc"
+    },
+    {
+      "name": "real-index-noise",
+      "query": "SQL 明明有索引但 explain 没走，我上次弱点是哪几个场景",
+      "should_recall": true,
+      "gold": "btree"
+    },
+    {
+      "name": "real-kafka-order",
+      "query": "订单消息要按顺序消费，我 mock 里是不是答得不清楚",
+      "should_recall": true,
+      "gold": "kafka_order"
+    },
+    {
+      "name": "real-mq-idempotency",
+      "query": "重复消费导致重复扣款，这块我应该回忆哪条记录",
+      "should_recall": true,
+      "gold": "mq_idempotency"
+    },
+    {
+      "name": "real-rate-limit",
+      "query": "突发流量限流那次架构决策，是令牌桶还是漏桶？",
+      "should_recall": true,
+      "gold": "rate_limit"
+    },
+    {
+      "name": "real-threadpool",
+      "query": "core/max/queue/reject 这些参数取舍，我是不是还不稳定",
+      "should_recall": true,
+      "gold": "threadpool"
+    },
+    {
+      "name": "real-yesterday-mock-weakness",
+      "query": "昨天 mock 的缺点是什么？",
+      "should_recall": true,
+      "gold": "kafka_order"
+    },
+    {
+      "name": "real-last-mock-bad-answer",
+      "query": "上次模拟面试我哪里没答好？",
+      "should_recall": true,
+      "gold": "kafka_order"
+    },
+    {
+      "name": "real-recent-weakness-summary",
+      "query": "最近暴露出来的缺点有哪些？",
+      "should_recall": true,
+      "gold": "threadpool"
+    },
+    {
+      "name": "real-what-to-review",
+      "query": "我现在应该优先复盘哪几个薄弱点？",
+      "should_recall": true,
+      "gold": "threadpool"
+    },
+    {
+      "name": "real-distributed-tx",
+      "query": "跨服务一致性除了 2PC，我复习过哪些方案？",
+      "should_recall": true,
+      "gold": "distributed_tx"
+    },
+    {
+      "name": "real-jvm-progress",
+      "query": "STW、GC Roots、对象晋升这些 JVM 复习进度到哪了？",
+      "should_recall": true,
+      "gold": "jvm_gc"
+    },
+    {
+      "name": "real-negative-rust",
+      "query": "我有没有记录过 Rust 生命周期和 borrow checker 的薄弱点？",
+      "should_recall": false
+    },
+    {
+      "name": "real-negative-redis-cluster",
+      "query": "Redis cluster resharding 和 hash slot 迁移，我之前有笔记吗？",
+      "should_recall": false
+    },
+    {
+      "name": "real-negative-refund",
+      "query": "退款风控、拒付争议、chargeback 这些支付问题我有总结吗？",
+      "should_recall": false
+    },
+    {
+      "name": "real-negative-k8s",
+      "query": "我是不是复习过 Kubernetes HPA 和 Pod 亲和性？",
+      "should_recall": false
+    },
+    {
+      "name": "real-negative-frontend",
+      "query": "React useEffect 的依赖数组我之前哪里错过？",
+      "should_recall": false
+    },
+    {
+      "name": "real-negative-smalltalk",
+      "query": "今天天气不错，顺便问下我之前说喜欢喝什么咖啡？",
+      "should_recall": false
+    }
+  ]
+}

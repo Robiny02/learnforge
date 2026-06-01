@@ -14,6 +14,12 @@ from pathlib import Path
 
 import pytest
 
+# 测试强制离线：先把 key 置空再 import learnforge（client.py 的 load_dotenv(override=False)
+# 不会覆盖已存在的环境变量），使 LLM.available=False、各 agent 走确定性兜底，断言可复现、不联网/计费。
+os.environ["OPENROUTER_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["ANTHROPIC_API_KEY"] = ""
+
 # 确保 learnforge 包可导入（conftest 所在目录会被 pytest 加入 sys.path）。
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -21,7 +27,12 @@ from learnforge.contracts.atom import KnowledgeAtom  # noqa: E402
 from learnforge.contracts.enums import EventType  # noqa: E402
 from learnforge.contracts.message import EventPayload  # noqa: E402
 from learnforge.storage.db import init_db  # noqa: E402
-from learnforge.storage.repositories import AtomRepository, EventRepository  # noqa: E402
+from learnforge.storage.repositories import (  # noqa: E402
+    AtomRepository,
+    ChunkRepository,
+    EventRepository,
+    QAHistoryRepository,
+)
 
 
 @pytest.fixture
@@ -49,4 +60,14 @@ def seeded_db(tmp_db: str) -> str:
                                atom_refs=["a0", "a1"], signal={"weak": True}), event_id=f"e{i}")
     er.append(EventPayload(event_type=EventType.QA_SIGNAL, topic="database",
                            atom_refs=["a2"], signal={"correct": False}), event_id="eq")
+
+    # 共享知识库语料（chunks）+ 本地用户库历史问答（qa_history），供检索用例。
+    cr = ChunkRepository(db_path=tmp_db)
+    cr.upsert(chunk_id="c0", text="乐观锁通过版本号实现并发控制，适用于读多写少场景。",
+              source_type="doc", topic="concurrency", kb_scope="shared")
+    cr.upsert(chunk_id="c1", text="B+树索引在数据库中用于范围查询与排序优化。",
+              source_type="blog", topic="database", kb_scope="shared")
+    qr = QAHistoryRepository(db_path=tmp_db)
+    qr.append(qa_id="q0", question="什么是乐观锁？", answer="基于版本号的并发控制策略。",
+              topic="concurrency")
     return tmp_db

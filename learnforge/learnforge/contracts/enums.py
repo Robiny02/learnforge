@@ -122,10 +122,53 @@ class DiagnosisTrigger(str, Enum):
 
 
 class RetrievalBackend(str, Enum):
-    """RetrievalAgent 可插拔后端（Design §3.6 / §10a G1）。"""
+    """RetrievalAgent 可插拔后端（Design §3.6 / §10a G1）。
+
+    历史字段，保留向后兼容；新代码改用 `KnowledgeScope` + `RetrievalMethod`。
+    映射约定：LOCAL → 本地用户库；CLOUD → 远程共享库。
+    """
 
     LOCAL = "local"
     CLOUD = "cloud"
+
+
+class KnowledgeScope(str, Enum):
+    """知识源所属层级（双层知识体系）。
+
+    - LOCAL：本地用户库——个人学习数据（mock 记录、历史问答等）。
+    - SHARED：共享知识库——可复用公共内容（课程/博客/面经/文档切片/公共知识点）。
+    """
+
+    LOCAL = "local"
+    SHARED = "shared"
+
+
+class RetrievalMethod(str, Enum):
+    """统一检索方式（RetrievalAgent 入口选择）。
+
+    - KEYWORD：关键词/子串匹配（LIKE 降级路径，CJK 友好）。
+    - FULLTEXT：FTS5 BM25 全文检索。
+    - VECTOR：sqlite-vec 向量 KNN（需 embedding 可用）。
+    - HYBRID：全文 + 向量并召回后 RRF 融合（默认）。
+    """
+
+    KEYWORD = "keyword"
+    FULLTEXT = "fulltext"
+    VECTOR = "vector"
+    HYBRID = "hybrid"
+
+
+class RetrievalMode(str, Enum):
+    """RetrievalAgent 内部运行模式。
+
+    - WORKFLOW：固定检索流水线（当前默认行为）。
+    - WORKFLOW_V2：固定流水线 + 失败后受控改写 + intent gate。
+    - REACT：Thought/Action/Observation 小回路，按观察结果重试改写/降级。
+    """
+
+    WORKFLOW = "workflow"
+    WORKFLOW_V2 = "workflow_v2"
+    REACT = "react"
 
 
 class ModelTier(str, Enum):

@@ -1,0 +1,4 @@
+{"title": "乐观锁 vs 悲观锁", "topic": "concurrency", "source_type": "doc", "source_url": "fixture://locks", "text": "乐观锁假设冲突很少发生，提交时用版本号(CAS)校验；悲观锁在读取时即加锁，适合写多冲突高的场景。数据库中乐观锁常用 version 列实现。"}
+{"title": "MVCC 多版本并发控制", "topic": "database", "source_type": "course", "source_url": "fixture://mvcc", "text": "MVCC 通过为每行保存多个版本来实现读写不互相阻塞。PostgreSQL 的 MVCC 用事务 ID 标记元组可见性，读不加锁，写产生新版本。"}
+{"title": "HNSW 向量索引", "topic": "retrieval", "source_type": "blog", "source_url": "fixture://hnsw", "text": "HNSW 是一种基于可导航小世界图的近似最近邻索引，查询复杂度近似对数级。pgvector 支持 hnsw 索引，配合 cosine 距离做向量检索。"}
+{"title": "BM25 排序函数", "topic": "retrieval", "source_type": "blog", "source_url": "fixture://bm25", "text": "BM25 是经典的关键词排序函数，综合词频 TF、逆文档频率 IDF 与文档长度归一化。它不是简单的全文匹配，而是带打分的相关性排序。"}
