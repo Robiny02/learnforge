@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Dict, List, Optional
 
@@ -51,7 +52,26 @@ _VAGUE_HELP_CUES = ("帮帮我", "帮我", "帮一下", "帮个忙", "弄一下"
 
 
 class _CapPick(BaseModel):
-    capability: str  # qa | planning | diagnosis | mock | unclear
+    capability: str  # qa | planning | diagnosis | mock | composite | note | unclear
+
+
+_LLM_CAPS = ("qa", "planning", "diagnosis", "mock", "composite", "note", "unclear")
+
+# 意图层用更强模型（gpt-5 系），可经 env 覆盖。它能扛多字段结构化输出（便宜模型只能单字段）。
+# 默认 gpt-5-mini（推理模型，单次 ~3-5s，精度/速度折中）；只用于意图判定，不动 judge/分类等高频 Haiku 档。
+_INTENT_MODEL = os.getenv("LF_INTENT_MODEL", "openai/gpt-5-mini")
+
+
+class _IntentJudgment(BaseModel):
+    """LLM 主判（强模型多字段）：意图 + 多轮关系 + 主题/岗位 + 澄清。槽位细节仍由确定性层补全。"""
+
+    capability: str = "qa"          # qa|planning|diagnosis|mock|composite|note|unclear
+    is_continuation: bool = False   # 在延续/追加上一轮主线（如「再加上并发」「那它呢」）
+    is_aside: bool = False          # 自包含临时插入（八股/生成），不接管主线
+    topic: Optional[str] = None
+    target_role: Optional[str] = None
+    needs_clarification: bool = False
+    clarification: Optional[str] = None
 
 
 def _matched_caps(low: str) -> Dict[str, int]:
@@ -86,47 +106,154 @@ class IntentResolver:
 
         low = text.lower()
 
-        # ① 显式命令优先。
+        # ① 显式命令优先（最便宜、无歧义）——保留为快路。
         m = _EXPLICIT_RE.match(low)
         if m and m.group(1) in _COMMANDS:
             cap = _COMMANDS[m.group(1)]
             body = text[m.end():].strip()
             return self._frame_for(Capability(cap), body or text, ["explicit"], conf=1.0)
 
+        # ② LLM 主判（结合对话窗口判能力/承接/旁支/主题）。意图判断逐步交给 LLM，
+        #    确定性规则只作离线兜底（"链路永远通"）。槽位仍由确定性槽位填充补全。
+        llm_frame = self._resolve_llm(text, ctx)
+        if llm_frame is not None:
+            return llm_frame
+
+        # ③ 离线兜底：无 key / LLM 失败 → 走确定性规则链。
+        return self._resolve_rules(text, low, ctx)
+
+    def _resolve_rules(self, text: str, low: str, ctx: Dict) -> IntentFrame:
+        """确定性规则链（离线兜底）：关键词/信号/复合/笔记/多轮承接/低置信消歧。"""
         matched = _matched_caps(low)
 
-        # ② 复合"准备面试"：diagnosis 主、planning 后继（与 manager 复合编排对齐）。
+        # 复合"准备面试"：diagnosis 主、planning 后继（与 manager 复合编排对齐）。
         if any(c in low for c in _PREP_CUES):
-            f = IntentFrame(capability=Capability.COMPOSITE, confidence=0.8,
-                            handoffs=["diagnosis", "planning"], signals=["prep_composite"])
-            return f
+            return IntentFrame(capability=Capability.COMPOSITE, confidence=0.8,
+                               handoffs=["diagnosis", "planning"], signals=["prep_composite"])
 
-        # ③ 单意图：按优先级选主能力。
+        # 单意图：按优先级选主能力。
         if matched:
             primary = next(c for c in _CAP_KEYWORDS if c in matched)
             rest = sorted((c for c in matched if c != primary), key=lambda c: matched[c])
             return self._frame_for(Capability(primary), text, ["keyword"],
                                    conf=0.85 if not rest else 0.7, handoffs=rest)
 
-        # ④ 无能力关键词，但有强信号 → 仍判 mock/planning（拷打/岗位/JD/deadline…）。
+        # 无能力关键词，但有强信号 → 仍判 mock/planning（拷打/岗位/JD/deadline…）。
         if S.has_mock_signal(text):
             return self._frame_for(Capability.MOCK, text, ["mock_signal"], conf=0.65)
         if S.has_plan_signal(text):
             return self._frame_for(Capability.PLANNING, text, ["plan_signal"], conf=0.6)
 
-        # ④b 多轮承接/切换：本句无自身关键词/信号，但出现承接/切换迹象或正处于 mock →
-        #     借用上文能力（LLM 结合历史优先，规则兜底），跨能力实现 topic 切换/延续。
+        # 生成 md/笔记/文档 → 笔记生成（QA 的呈现变体，自包含、不借上下文）。
+        if S.is_note_request(text):
+            topic = S.extract_known_topic(text)
+            slots = {"topic": topic} if topic else {}
+            return IntentFrame(capability=Capability.QA, action="note", slots=slots,
+                               confidence=0.8, use_retrieval=True, signals=["note_gen"])
+
+        # 多轮承接/切换：借用上文能力（跨能力 topic 切换/延续）。
         carried = self._carry_from_context(text, ctx)
         if carried is not None:
             return carried
 
-        # ⑤ 兜底 → qa（叶子答题能力）；意义不明时再细判：澄清 or 走 qa。
+        # 兜底 → qa；意义不明时再细判：澄清 or 走 qa。
         frame = self._frame_for(Capability.QA, text, ["fallback"], conf=0.4)
         return self._disambiguate_low_confidence(frame, text, history=ctx.get("history"))
 
     def mock_frame(self, text: str) -> IntentFrame:
         """强制按"开面试"解析（前端已点 mock 模式时用，绕过能力判定，仍抽槽位+澄清）。"""
         return self._frame_for(Capability.MOCK, (text or "").strip(), ["forced_mock"], conf=0.9)
+
+    # ---------------------------------------------------------------- LLM 主判
+    def _resolve_llm(self, text: str, ctx: Dict) -> Optional[IntentFrame]:
+        """LLM 主判（强模型多字段）：结合对话窗口判意图/承接/旁支/主题，映射成 IntentFrame。
+
+        无 key / 调用失败 / 判不出 → None（由调用方退回确定性规则链）。
+        槽位仍由确定性 `_frame_for`（slots.py）补全——保留的唯一结构化层。
+        """
+        judg = self._llm_judge(text, ctx)
+        if judg is None:
+            return None
+        cap = (judg.capability or "").strip().lower()
+        if cap not in _LLM_CAPS:
+            return None
+
+        signals = ["llm_intent"]
+        if judg.is_continuation:
+            signals.append("context_carry")  # server 据此对 planning/diagnosis 显式路由
+        if judg.is_aside:
+            signals.append("aside")
+
+        if cap == "unclear":  # 意义不明 → 反问一句。
+            frame = self._frame_for(Capability.QA, text, signals + ["fallback"], conf=0.4)
+            if judg.clarification:
+                frame.clarification, frame.pending_slot = judg.clarification, "intent"
+                return frame
+            return self._clarify_intent(frame)
+        if cap == "note":     # 生成 md/笔记/文档 → 笔记呈现（QA 变体）。
+            topic = judg.topic or S.extract_known_topic(text)
+            return IntentFrame(capability=Capability.QA, action="note",
+                               slots={"topic": topic} if topic else {},
+                               confidence=0.85, use_retrieval=True, signals=signals + ["note_gen"])
+        if cap == "composite":
+            return IntentFrame(capability=Capability.COMPOSITE, confidence=0.85,
+                               handoffs=["diagnosis", "planning"], signals=signals)
+
+        frame = self._frame_for(Capability(cap), text, signals, conf=0.85)
+        # LLM 给的主题/岗位线索补进槽位（确定性抽取没拿到时）。
+        if judg.topic and not frame.slots.get("topic"):
+            frame.slots["topic"] = judg.topic
+        if cap == "mock" and judg.target_role and not frame.slots.get("target_role"):
+            frame.slots["target_role"] = judg.target_role
+        # 澄清以 LLM 为准：它说不用就清掉规则门控的反问；它说要而规则没给则补上。
+        if not judg.needs_clarification:
+            frame.clarification, frame.pending_slot = None, None
+        elif not frame.clarification and judg.clarification:
+            frame.clarification = judg.clarification
+        return frame
+
+    @staticmethod
+    def _llm_judge(text: str, ctx: Dict) -> Optional["_IntentJudgment"]:
+        """带对话窗口的多字段判定（用 _INTENT_MODEL=gpt-5）。无 key / 异常 → None。"""
+        from ..llm.client import LLM
+
+        if not getattr(LLM, "available", False):
+            return None
+        win = ""
+        rows = [f"  上一轮用户「{h.get('text', '')}」(判为 {h.get('capability', '?')})"
+                for h in list(ctx.get("history") or [])[-3:] if h.get("text")]
+        if rows:
+            win += "最近对话：\n" + "\n".join(rows) + "\n"
+        if ctx.get("last_capability"):
+            win += f"当前主线在做：{ctx['last_capability']}\n"
+        if ctx.get("active_mock"):
+            win += "正处于一场进行中的模拟面试。\n"
+        prompt = (
+            "判用户这条消息的意图（看动作意图，别只看主题词）。\n"
+            "capability：\n"
+            "- mock=想练习/被考/模拟面试/出题（考考我、出几道题、拿我项目拷打我、我面X帮我练）；\n"
+            "- diagnosis=想知道哪里薄弱/被诊断（我哪里薄弱、诊断下我、帮我复盘）；\n"
+            "- planning=想要学习计划/复习排期（帮我做计划、两周内补齐X、调整计划）；\n"
+            "- note=让你生成 md/笔记/文档/报告（整理成 md、写一份笔记、生成报告）；\n"
+            "- composite=先诊断再据此排计划（快面试了帮我准备、面试冲刺）；\n"
+            "- qa=问某个概念/技术点或闲聊（什么是X、X和Y区别、你好）；\n"
+            "- unclear=太含糊看不出想做什么（emmm、随便、帮帮我）。\n"
+            "is_continuation：是否在延续/追加上一轮主线（再加上X / 那它呢 / 改成X）。\n"
+            "is_aside：是否自包含临时插入（突然问八股、让生成笔记），不接管主线。\n"
+            "needs_clarification：意义不明需反问才 true，并给 clarification 一句话。\n"
+            "topic/target_role：能抽到就填，否则留空。\n"
+            "优先非 qa：像 mock/diagnosis/planning/note/composite 就别落 qa；只有真在问概念或闲聊才 qa。\n\n"
+            f"{win}用户这条消息：{text.strip()}"
+        )
+        try:
+            obj, _ = LLM.complete_structured(
+                prompt, _IntentJudgment, model_tier=ModelTier.HAIKU, model=_INTENT_MODEL,
+                system="你是意图判定器，只输出 JSON。",
+                max_tokens=1500, timeout_s=60.0,
+            )
+            return obj
+        except Exception:  # noqa: BLE001 - 主判失败不阻断，退回规则
+            return None
 
     def resume_pending(self, pending: Dict, reply: str) -> IntentFrame:
         """澄清下一轮：把用户回复填进 pending_slot，重建已补全的 frame。"""
@@ -187,6 +314,11 @@ class IntentResolver:
         触发条件：出现承接/切换迹象，或正处于 mock。能力判定 LLM 带历史优先、规则兜底
         （active_mock→mock，否则沿用上一轮能力）。判不出 → None，交回 qa 兜底。
         """
+        # 自包含的独立请求（八股问句 / 生成笔记）→ 永不借用上下文，按本句意图答。
+        # 这正是"用户跳脱、突然插问八股或让生成 md"时该有的行为。
+        if S.is_self_contained(text):
+            return None
+
         last_cap = (ctx.get("last_capability") or "").lower()
         active_mock = bool(ctx.get("active_mock"))
         last_topic = ctx.get("last_topic")

@@ -13,6 +13,13 @@ from learnforge.intent import IntentResolver
 from learnforge.intent import slots as S
 
 
+@pytest.fixture(autouse=True)
+def _llm_off(monkeypatch):
+    # 反转后 resolve() 默认 LLM 主判；此处关掉以测确定性规则兜底链（本文件断言的就是它）。
+    from learnforge.llm import client
+    monkeypatch.setattr(client.LLM, "available", False, raising=False)
+
+
 @pytest.fixture
 def resolver():
     return IntentResolver()

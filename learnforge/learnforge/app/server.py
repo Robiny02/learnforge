@@ -67,8 +67,18 @@ def _ctx_load(session_id: str) -> dict:
     return _UI_CTX.get(session_id, {})
 
 
+# 主线意图能力（开了一条"线程"）；qa/note 是自包含旁支（aside），不接管主线。
+_THREAD_CAPS = {"planning", "diagnosis", "mock"}
+# 连续多少个 aside 后认为主线已放弃（避免 last_capability 长期粘住而误带后续承接句）。
+_THREAD_DECAY = 3
+
+
 def _ctx_record(session_id: str, text: str, body: dict) -> None:
-    """从本轮响应回写上下文：上一轮能力(plan 末个 agent) / 是否在 mock / 上一轮主题 / 历史。"""
+    """回写每会话上下文，**让主线意图粘住、旁支插入不污染**（用户跳脱时仍稳）。
+
+    - 实质任务轮(planning/diagnosis/mock) → 更新主线 last_capability，清零 aside 计数；
+    - 八股问答 / 生成笔记等旁支 → 不动主线，aside 计数 +1；连续 ≥3 次才让主线失效。
+    """
     from ..intent.slots import extract_known_topic
 
     if not isinstance(body, dict):
@@ -78,15 +88,20 @@ def _ctx_record(session_id: str, text: str, body: dict) -> None:
     if isinstance(plan, list) and plan and isinstance(plan[-1], dict):
         cap = plan[-1].get("agent")
     cur = _UI_CTX.setdefault(session_id, {"history": []})
-    if cap:
+    if cap in _THREAD_CAPS:                 # 实质任务 → 接管/刷新主线
         cur["last_capability"] = cap
+        cur["aside_streak"] = 0
+    elif cap:                                # qa/note 旁支 → 主线粘住，计 aside
+        cur["aside_streak"] = cur.get("aside_streak", 0) + 1
+        if cur["aside_streak"] >= _THREAD_DECAY:
+            cur.pop("last_capability", None)  # 久未延续 → 主线失效
     cur["active_mock"] = bool(body.get("mock_active"))
     topic = extract_known_topic(text or "")
     if topic:
         cur["last_topic"] = topic
     hist = cur.setdefault("history", [])
-    hist.append({"text": (text or "")[:80], "capability": cap or cur.get("last_capability")})
-    del hist[:-4]  # 只留最近 4 轮
+    hist.append({"text": (text or "")[:80], "capability": cap})
+    del hist[:-4]  # 对话窗口：只留最近 4 轮
 
 
 class QARequest(BaseModel):
@@ -497,10 +512,13 @@ if FastAPI is not None:
             mgr = _mgr()
             frame = (_resolver().mock_frame(text) if mode == "mock"
                      else _resolver().resolve(text, ctx))  # ctx：多轮承接/切换借用上文
+            # 生成 md/笔记/文档（用户随手插入的生成请求）→ 走笔记呈现链路。
+            if "note_gen" in frame.signals:
+                return _ui_route("note", text, req.session_id)
             # 仅在有真实开场信号时才开面试：避免"什么是面试技巧"这类裸含"面试"的问答被误开。
             # active_mock 续接（"再来一题"等无关键词承接）也算真实开场信号。
             want_mock = (mode == "mock" or _wants_start_mock(text) or _has_mock_signal(text)
-                         or "context_carry" in frame.signals)
+                         or "context_carry" in frame.signals or "llm_intent" in frame.signals)
             if frame.capability == Capability.MOCK and want_mock:
                 if frame.clarification:
                     return _needs_input_response(frame)
@@ -511,8 +529,8 @@ if FastAPI is not None:
             # 意义不明的含糊求助（兜底 qa + 反问）→ 主动澄清一轮。
             if frame.capability == Capability.QA and frame.clarification:
                 return _needs_input_response(frame)
-            # 多轮承接/切换借到了 planning/diagnosis → 显式按该能力走（否则被 _ui_route 默认 mode 覆盖）。
-            if "context_carry" in frame.signals:
+            # LLM 主判 / 多轮承接到的 planning/diagnosis → 显式按该能力走（否则被 _ui_route 默认 mode 覆盖）。
+            if {"context_carry", "llm_intent"} & set(frame.signals):
                 if frame.capability == Capability.PLANNING:
                     return _ui_route("plan", text, req.session_id)
                 if frame.capability == Capability.DIAGNOSIS:

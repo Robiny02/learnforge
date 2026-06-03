@@ -126,6 +126,7 @@ class LLMClient:
         max_tokens: int = 1024,
         timeout_s: Optional[float] = None,
         response_format: Optional[dict] = None,
+        model: Optional[str] = None,
     ) -> LLMResult:
         if not self.available or self._httpx is None:
             raise LLMUnavailable("OPENROUTER_API_KEY 未设置或 httpx 不可用。")
@@ -136,7 +137,7 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         payload = {
-            "model": _MODEL_NAME[model_tier],
+            "model": model or _MODEL_NAME[model_tier],  # 显式 model 覆盖档位默认（如意图层用 gpt-5）
             "messages": messages,
             "max_tokens": max_tokens,
         }
@@ -246,8 +247,12 @@ class LLMClient:
         max_tokens: int = 1024,
         timeout_s: Optional[float] = None,
         retries: int = 1,
+        model: Optional[str] = None,
     ) -> Tuple[T, LLMResult]:
-        """调用 LLM 并把 JSON 输出解析为 `schema`。失败重试 1 次（Design §8a）。"""
+        """调用 LLM 并把 JSON 输出解析为 `schema`。失败重试 1 次（Design §8a）。
+
+        `model`：可选模型 id 覆盖（如意图层用 gpt-5），缺省按 `model_tier` 取默认。
+        """
         # 给模型完整 JSON Schema（含嵌套 $defs），否则像 PlanningOutput 这种嵌套结构
         # 便宜模型产不出合法 JSON → 解析失败 → 调用方掉 stub。
         try:
@@ -268,6 +273,7 @@ class LLMClient:
                 max_tokens=max_tokens,
                 timeout_s=timeout_s,
                 response_format={"type": "json_object"},
+                model=model,
             )
             try:
                 obj = schema.model_validate_json(_extract_json(result.text))

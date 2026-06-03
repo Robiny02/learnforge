@@ -302,6 +302,54 @@ class ManagerAgent(BaseAgent):
                 nxt = "planning"
         return nxt
 
+    def plan_execute(
+        self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4
+    ) -> Tuple[List[ResponsePayload], Dict[str, Any], List[Dict[str, Any]]]:
+        """复合任务的 plan-as-tool-calls：LLM(或确定性) 先 create 一个显式步骤计划，
+        执行器逐步 dispatch + mark_step=completed，§5.6 异常（诊断空→跳过改计划+建议 mock）保留。
+
+        写仍走 dispatch/_apply_step（唯一写者不变）；meta["plan_steps"] 带回带状态的计划供 UI/trace。
+        """
+        from ..llm.client import LLM
+        from .planner import build_plan
+
+        plan = build_plan(user_input, self._wants_plan(user_input), llm=LLM)
+        responses: List[ResponsePayload] = []
+        context: Dict[str, Any] = {"composite": True, "trace_id": trace_id}
+        meta: Dict[str, Any] = {"composite": True, "skipped_modify": False,
+                                "suggest_mock": False, "planned": True}
+        executed: List[Dict[str, Any]] = []
+        done: List[str] = []
+
+        for step in plan.steps[:max_steps]:
+            agent = step.agent
+            if agent not in ("qa", "planning", "diagnosis", "mock") or agent in done:
+                continue
+            # §5.6 异常①：planning.modify 但诊断为空 → 跳过，建议先 mock。
+            if agent == "planning" and "diagnosis" in context and _is_empty_diagnosis(context["diagnosis"]):
+                meta["skipped_modify"] = True
+                meta["suggest_mock"] = True
+                responses.append(ResponsePayload(
+                    status=Status.OK, confidence=0.6,
+                    result={"skipped": True, "reason": "诊断信号不足，跳过改计划，建议先做模拟面试采集数据。"}))
+                executed.append({"agent": "planning", "task_type": "plan.modify"})
+                done.append("planning")
+                step.status = "completed"
+                continue
+            resp = self.dispatch(agent, step.task or user_input, context, trace_id=trace_id)
+            responses.append(resp)
+            self._apply_step(agent, resp, context, meta, trace_id)
+            executed.append({"agent": agent})
+            done.append(agent)
+            step.status = "completed"
+
+        if not executed:  # 空计划兜底：至少回答一次
+            resp = self.dispatch("qa", user_input, context, trace_id=trace_id)
+            responses.append(resp)
+            executed.append({"agent": "qa"})
+        meta["plan_steps"] = [s.model_dump() for s in plan.steps]
+        return responses, meta, executed
+
     def execute_dynamic(
         self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4
     ) -> Tuple[List[ResponsePayload], Dict[str, Any], List[Dict[str, Any]]]:
@@ -309,7 +357,11 @@ class ManagerAgent(BaseAgent):
 
         动作空间 = {qa, planning, diagnosis, mock, finish}；写仍是确定性 commit（_apply_step）。
         返回 (responses, meta, executed)；executed 供 aggregate/UI 画链路。
+        复合任务（"准备面试"等）→ 走显式 plan-as-tool-calls（plan_execute）。
         """
+        if self._wants_plan(user_input):
+            return self.plan_execute(user_input, trace_id=trace_id, max_steps=max_steps)
+
         responses: List[ResponsePayload] = []
         # 动态单步路由默认不是 composite（避免把单独 diagnosis 的 trigger 误标成 composite）。
         context: Dict[str, Any] = {"composite": False, "trace_id": trace_id}

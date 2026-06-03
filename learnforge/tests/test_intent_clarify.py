@@ -14,6 +14,13 @@ from learnforge.contracts.intent import Capability, MockAction
 from learnforge.intent import IntentResolver
 
 
+@pytest.fixture(autouse=True)
+def _llm_off(monkeypatch):
+    # 反转后 resolve() 默认 LLM 主判；关掉以测确定性规则澄清门控。
+    from learnforge.llm import client
+    monkeypatch.setattr(client.LLM, "available", False, raising=False)
+
+
 @pytest.fixture
 def resolver():
     return IntentResolver()  # 无注入档案材料 → 拷打类缺料会索要

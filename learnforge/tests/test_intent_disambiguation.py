@@ -20,9 +20,9 @@ def resolver():
     return IntentResolver()
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def llm_off(monkeypatch):
-    # 强制无 LLM，走确定性兜底，让"含糊→反问"可回归。
+    # 强制无 LLM，走确定性兜底，让"含糊→反问"可回归（反转后 resolve 默认 LLM 主判）。
     from learnforge.llm import client
 
     monkeypatch.setattr(client.LLM, "available", False, raising=False)
