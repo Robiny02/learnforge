@@ -26,12 +26,18 @@ class PlanningAgent(BaseAgent):
         self._db_path = db_path
         self.last_notion_url: Optional[str] = None
         self.last_report_path: Optional[str] = None
+        self.last_plan_image_path: Optional[str] = None
+        self.last_plan_image_spec: Optional[Dict] = None
         _notion.register()  # 把 notion.sync 接入运行时工具表（幂等）
         from ..integrations import report as _report
         _report.register()  # report.generate（本地 Markdown 报告）
+        from ..integrations import gpt_image as _gpt_image
+        _gpt_image.register()  # gpt_image.generate（学习计划信息图 PNG）
 
     def run(self, payload: PlanningInput) -> PlanningOutput:
         self.last_notion_url = None
+        self.last_plan_image_path = None
+        self.last_plan_image_spec = None
         # 必填校验（Design §3.7 / §5.2）：缺现状 → needs_input。
         if payload.mode == PlanMode.GENERATE and not payload.goal:
             return PlanningOutput(diff=PathDiff(rationale="缺少目标，需追问"), status=Status.NEEDS_INPUT)
@@ -68,6 +74,28 @@ class PlanningAgent(BaseAgent):
             days.setdefault(it.day_index, []).append(title_by_id.get(it.atom_id, it.atom_id))
         plan_text = "\n".join(f"Day {d + 1}: " + "; ".join(v) for d, v in sorted(days.items()))
 
+        # 出图改为按需：始终备好 prompt-ready spec（供前端"生成信息图"按钮经 /ui/image 触发）；
+        # 仅当 LF_GPT_IMAGE_AUTO 开启时才在链路里同步出图（默认关，避免每次 /plan 慢且费钱）。
+        self.last_plan_image_spec = {
+            "title": "LearnForge 学习计划",
+            "days": {str(d): v for d, v in days.items()},
+            "summary": "按天分桶的复习路线（弱点优先）",
+            "tips": ["每天完成后做一场模拟面试巩固", "薄弱点会自动进入下次诊断"],
+        }
+        try:
+            from ..integrations import gpt_image as _gpt_image
+
+            if _gpt_image.auto_enabled():
+                res = _gpt_image.generate_plan_infographic(
+                    title="LearnForge 学习计划", days=days,
+                    summary="按天分桶的复习路线（弱点优先）",
+                    tips=["每天完成后做一场模拟面试巩固", "薄弱点会自动进入下次诊断"],
+                )
+                if res.get("ok"):
+                    self.last_plan_image_path = res.get("path")
+        except Exception:
+            pass
+
         # 暴露给模型的工具 = 已授权 + 可用的发布工具。
         tools: List[str] = []
         if self.has_tool("notion.sync") and _notion.available():
@@ -84,8 +112,11 @@ class PlanningAgent(BaseAgent):
                     self,
                     user_prompt=(
                         f"我已生成如下可执行的学习计划：\n{plan_text}\n\n"
-                        "请发布它：可调用 notion.sync 发成 Notion 笔记、和/或 report.generate 生成本地 Markdown 报告。"
-                        "参数 days 用 {天序号(从0):[条目]} 结构，summary 一句话，tips 给 1-2 条。"
+                        "请发布成一份 LearnForge 风格的学习计划：要体现弱点优先、每日目标、练习任务、"
+                        "验收标准、mock/QA 复盘节点，而不是只列清单。"
+                        "可调用 notion.sync 发成 Notion 笔记、和/或 report.generate 生成本地 Markdown 报告。"
+                        "参数 days 用 {天序号(从0):[条目]} 结构，summary 写 1-2 句说明为何这样排序，"
+                        "tips 给 2-4 条可执行建议。"
                     ),
                     tool_names=tools,
                     system="你是计划发布助手。用工具把计划发布出去，不要只用文字回答。",
@@ -103,16 +134,26 @@ class PlanningAgent(BaseAgent):
         if not self.last_notion_url and self.has_tool("notion.sync") and _notion.available():
             out = _notion.create_learning_note(
                 title="LearnForge 学习计划",
-                summary="基于弱点诊断生成的复习计划，按天分桶。",
+                summary="基于弱点诊断生成的复习计划：先补阻塞性基础，再用 mock/QA 验证输出质量。",
                 days=days,
-                tips=["完成每日 checkbox 后做一场模拟面试巩固", "薄弱点会自动进入下次诊断"],
+                tips=[
+                    "每天结束用 3 句话复述核心机制、适用场景和常见误区",
+                    "隔天用一场 3-5 轮 mock 检查是否能抗追问",
+                    "低分题写入 weak memory，下一轮诊断会重新排序",
+                ],
             )
             if isinstance(out, dict) and not out.get("error"):
                 self.last_notion_url = out.get("url")
         if not self.last_notion_url and not self.last_report_path and self.has_tool("report.generate"):
             from ..integrations.report import report_generate_handler
             out = report_generate_handler({"title": "LearnForge 学习计划",
-                                           "summary": "按天分桶的复习计划。", "days": days})
+                                           "summary": "弱点优先的分天复习计划：每一天都要产出可验证的面试表达，而不只是看完材料。",
+                                           "days": days,
+                                           "tips": [
+                                               "每天保留一条 answer card：危险说法、合格说法、强回答",
+                                               "每两个学习日做一次短 mock，低分点回写 weak memory",
+                                               "复习顺序优先服务面试表达：定义 -> 机制 -> 取舍 -> 失败场景",
+                                           ]})
             if out.get("ok"):
                 self.last_report_path = out.get("path")
 
@@ -200,6 +241,8 @@ class PlanningAgent(BaseAgent):
             head
             + f"候选 Atom：\n{atom_lines}\n"
             + "产出增量 PathDiff（add/remove/reorder + rationale），按天分桶（day_index 从 0 起），不全量重写。\n"
+            + "rationale 要写得像学习教练：说明优先级依据、每天训练目标、练习/输出方式、验收标准、"
+            + "何时用 mock/QA 复盘；避免只写“已生成计划”。\n"
             + "【硬约束】add 里每个条目的 atom_id 必须取自上面候选 Atom 列表中的真实 atom_id，"
             "禁止编造新 id（如 '1'、'2'）；若候选为空再不添加。"
         )

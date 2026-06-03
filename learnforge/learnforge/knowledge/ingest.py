@@ -76,11 +76,12 @@ def ingest_document(
     parent_chunk_id: Optional[str] = None,
     db_path: Optional[str] = None,
     repo: Optional[ChunkRepository] = None,
+    embed: bool = True,
 ) -> List[str]:
     """切片并灌入单篇文档，返回新建 chunk_id 列表。"""
     repo = repo or ChunkRepository(db_path=db_path)
     pieces = chunk_text(text)
-    embeddings = _embed_batch(pieces)
+    embeddings = _embed_batch(pieces) if embed else [None] * len(pieces)
     chunk_ids: List[str] = []
     for idx, (piece, emb) in enumerate(zip(pieces, embeddings)):
         chunk_id = str(uuid.uuid4())

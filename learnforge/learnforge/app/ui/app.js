@@ -12,13 +12,22 @@ const viewButtons = Array.from(document.querySelectorAll(".view-tabs button"));
 const views = Array.from(document.querySelectorAll(".view"));
 const fileList = document.querySelector("#fileList");
 const filePreview = document.querySelector("#filePreview");
+const mockToggle = document.querySelector("#mockToggle");
+const memoryLog = document.querySelector("#memoryLog");
+const memTokens = document.querySelector("#memTokens");
+const convList = document.querySelector("#convList");
+const newChatBtn = document.querySelector("#newChatBtn");
+
+const GREETING =
+  "早上好，今天的学习地块已经晒到太阳了。把一个概念、项目问题或面试主题丢过来，我们先从最需要浇水的地方开始。";
 
 const state = {
   mode: "qa",
-  sessionId: `ui-${Math.random().toString(16).slice(2, 8)}`,
+  sessionId: "",  // 启动时由 initConversations() 设为活跃对话；每个对话 = 一个 session_id。
+  mock: { active: false, sessionId: null },
+  history: [],
+  replaying: false,
 };
-
-sessionId.textContent = state.sessionId;
 
 const modeCopy = {
   qa: "问一个概念、项目或复习问题...",
@@ -46,6 +55,253 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+// 聊天持久化：把每条渲染过的消息记进 history → localStorage；刷新后回放。
+const HISTORY_KEY = () => `lf_chat_${state.sessionId}`;
+
+function saveHistory() {
+  if (state.replaying) return;
+  try {
+    localStorage.setItem(HISTORY_KEY(), JSON.stringify(state.history.slice(-200)));
+  } catch (e) { /* 隐私模式 / 配额 → 忽略 */ }
+}
+
+function pushHistory(entry) {
+  if (state.replaying) return;
+  state.history.push(entry);
+  saveHistory();
+}
+
+// 载入当前 session 的聊天记录并回放到界面（无记录 → 显示欢迎语）。
+// 回放期间 state.replaying=true，避免回放本身又被写回 history。
+function loadTranscript(showRestoredNote) {
+  let items = [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY());
+    if (raw) items = JSON.parse(raw);
+  } catch (e) { items = []; }
+  state.replaying = true;
+  conversation.innerHTML = "";
+  if (Array.isArray(items) && items.length) {
+    items.forEach((it) => {
+      if (it.k === "msg") addMessage(it.role, it.text, it.meta);
+      else if (it.k === "system") addSystem(it.text);
+      else if (it.k === "actions") addActions(it.actions);
+      else if (it.k === "image") addImage(it.url, it.caption);
+      else if (it.k === "score") addScore(it.score);
+    });
+    state.history = items;
+    if (showRestoredNote) addSystem("（已载入历史对话，上下文已带上，可继续。）");
+  } else {
+    state.history = [];
+    addMessage("agent", GREETING, "LearnForge · Manager");
+  }
+  state.replaying = false;
+}
+
+// ---------------- 多对话管理（Claude 风格左侧列表）----------------
+// 每个对话 = 一个 session_id；切换对话即切 session_id，后端 session_state 据此带上其上下文。
+const CONV_INDEX_KEY = "lf_conv_index";   // [{id, title, updatedAt}]，按 updatedAt 倒序
+const ACTIVE_KEY = "lf_active_session";
+
+function readConvIndex() {
+  try { return JSON.parse(localStorage.getItem(CONV_INDEX_KEY) || "[]"); }
+  catch (e) { return []; }
+}
+function writeConvIndex(idx) {
+  try { localStorage.setItem(CONV_INDEX_KEY, JSON.stringify(idx)); } catch (e) { /* 忽略 */ }
+}
+function newSessionId() {
+  return `ui-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 6)}`;
+}
+
+function setActiveSession(id) {
+  state.sessionId = id;
+  try { localStorage.setItem(ACTIVE_KEY, id); } catch (e) { /* 忽略 */ }
+  if (sessionId) sessionId.textContent = id;
+}
+
+function resetMemoryPanel() {
+  if (memoryLog) memoryLog.innerHTML = `<p class="log-line"><span>Idle</span> 等待对话，加载的 prompt / 文件会显示在这里</p>`;
+  if (memTokens) memTokens.textContent = "0 tok";
+}
+
+function renderConvList() {
+  if (!convList) return;
+  const idx = readConvIndex();
+  convList.innerHTML = "";
+  if (!idx.length) {
+    convList.innerHTML = `<p class="conv-empty">还没有对话</p>`;
+    return;
+  }
+  idx.forEach((conv) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `conv-item${conv.id === state.sessionId ? " active" : ""}`;
+    const when = conv.updatedAt ? new Date(conv.updatedAt) : new Date();
+    item.innerHTML =
+      `<strong>${escapeHtml(conv.title || "新对话")}</strong>` +
+      `<small>${escapeHtml(when.toLocaleString())}</small>` +
+      `<span class="conv-del" title="删除对话">×</span>`;
+    item.addEventListener("click", () => switchConversation(conv.id));
+    const del = item.querySelector(".conv-del");
+    if (del) del.addEventListener("click", (e) => { e.stopPropagation(); deleteConversation(conv.id); });
+    convList.appendChild(item);
+  });
+}
+
+// 本轮收尾：刷新当前对话的标题(取首条用户消息)/时间戳，并置顶。
+function touchConversation(firstUserText) {
+  const idx = readConvIndex();
+  let conv = idx.find((c) => c.id === state.sessionId);
+  if (!conv) conv = { id: state.sessionId, title: "新对话", updatedAt: Date.now() };
+  if ((!conv.title || conv.title === "新对话") && firstUserText) {
+    conv.title = firstUserText.slice(0, 24);
+  }
+  conv.updatedAt = Date.now();
+  writeConvIndex([conv, ...idx.filter((c) => c.id !== conv.id)]);
+  renderConvList();
+}
+
+function switchConversation(id) {
+  if (id === state.sessionId) return;
+  if (state.mock.active) setMockActive(false);
+  setActiveSession(id);
+  loadTranscript(true);
+  resetMemoryPanel();
+  renderConvList();
+}
+
+function newConversation() {
+  if (state.mock.active) setMockActive(false);
+  const id = newSessionId();
+  writeConvIndex([{ id, title: "新对话", updatedAt: Date.now() }, ...readConvIndex()]);
+  setActiveSession(id);
+  loadTranscript(false);  // 空 → 显示欢迎语
+  resetMemoryPanel();
+  renderConvList();
+}
+
+function deleteConversation(id) {
+  writeConvIndex(readConvIndex().filter((c) => c.id !== id));
+  try { localStorage.removeItem(`lf_chat_${id}`); } catch (e) { /* 忽略 */ }
+  if (id === state.sessionId) {
+    const idx = readConvIndex();
+    if (idx.length) switchConversation(idx[0].id);
+    else newConversation();
+  } else {
+    renderConvList();
+  }
+}
+
+// 启动：选中活跃对话(没有则建一个)，载入其记录并渲染列表。
+function initConversations() {
+  let active = null;
+  try { active = localStorage.getItem(ACTIVE_KEY); } catch (e) { /* 忽略 */ }
+  const idx = readConvIndex();
+  if (active && idx.some((c) => c.id === active)) {
+    setActiveSession(active);
+  } else if (idx.length) {
+    setActiveSession(idx[0].id);
+  } else {
+    const id = newSessionId();
+    writeConvIndex([{ id, title: "新对话", updatedAt: Date.now() }]);
+    setActiveSession(id);
+  }
+  loadTranscript(true);
+  renderConvList();
+}
+
+if (newChatBtn) newChatBtn.addEventListener("click", newConversation);
+
+// 记忆面板：展示本轮注入 prompt 的来源(文件名·摘要·token) + 记忆读写事件。
+const MEM_CAT = { read: "读", inject: "注", write: "写", maintain: "维" };
+
+function renderMemoryLog(mem) {
+  if (!memoryLog) return;
+  if (!mem) return;
+  const loaded = Array.isArray(mem.loaded) ? mem.loaded : [];
+  const events = Array.isArray(mem.events) ? mem.events : [];
+  const total = loaded.reduce((acc, x) => acc + (x.tokens || 0), 0);
+  if (memTokens) memTokens.textContent = `${total} tok`;
+  const rows = [];
+  loaded.forEach((x) => {
+    const summary = x.summary ? ` · ${escapeHtml(x.summary)}` : "";
+    rows.push(
+      `<p class="log-line mem-loaded"><span>${escapeHtml(x.kind || "load")}</span>` +
+      `${escapeHtml(x.name || "")}${summary} · ~${x.tokens || 0} tok</p>`
+    );
+  });
+  events.forEach((e) => {
+    const reason = e.reason ? `（${escapeHtml(e.reason)}）` : "";
+    rows.push(
+      `<p class="log-line mem-evt"><span>${escapeHtml(MEM_CAT[e.category] || "·")}</span>` +
+      `${escapeHtml(e.action)}：${escapeHtml(e.result)}${reason}</p>`
+    );
+  });
+  if (!rows.length) {
+    rows.push(`<p class="log-line"><span>Memory</span>本轮未经记忆流水线（fast / mock 路径）</p>`);
+  }
+  memoryLog.innerHTML = rows.join("");
+}
+
+function inlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function renderRichText(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let listType = null;
+
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+
+  lines.forEach((raw) => {
+    const line = raw.trim();
+    if (!line) {
+      closeList();
+      return;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(heading[1].length + 2, 5);
+      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      if (listType !== "ul") {
+        closeList();
+        html.push("<ul>");
+        listType = "ul";
+      }
+      html.push(`<li>${inlineMarkdown(bullet[1])}</li>`);
+      return;
+    }
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      if (listType !== "ol") {
+        closeList();
+        html.push("<ol>");
+        listType = "ol";
+      }
+      html.push(`<li>${inlineMarkdown(ordered[1])}</li>`);
+      return;
+    }
+    closeList();
+    html.push(`<p>${inlineMarkdown(line)}</p>`);
+  });
+  closeList();
+  return `<div class="rich-text">${html.join("") || "<p></p>"}</div>`;
+}
+
 function setView(name) {
   viewButtons.forEach((button) => button.classList.toggle("active", button.dataset.view === name));
   views.forEach((view) => view.classList.toggle("active", view.id === `view-${name}`));
@@ -63,6 +319,99 @@ function setMode(mode) {
 
 modeSelect.addEventListener("change", () => setMode(modeSelect.value));
 
+// 意图判定（作答/插问/退出/暂停 + 退出确认）全部由后端轻量 LLM 语义完成，前端不再硬编码关键词。
+
+// 状态持久化：长会话 / 刷新后不丢失“正在面试”及当前题目。
+function persistMock() {
+  try {
+    localStorage.setItem("lf_mock", JSON.stringify(state.mock));
+  } catch (e) { /* 隐私模式等 → 忽略 */ }
+}
+function restoreMock() {
+  try {
+    const raw = localStorage.getItem("lf_mock");
+    if (!raw) return;
+    const m = JSON.parse(raw);
+    if (m && m.active && m.sessionId) {
+      Object.assign(state.mock, m);
+      setMockActive(true, m.sessionId);
+      addSystem(`已恢复进行中的模拟面试（已答 ${state.mock.turns || 0} 轮）。`);
+      if (state.mock.lastQuestion) addMessage("agent", state.mock.lastQuestion, "LearnForge · Interviewer");
+    }
+  } catch (e) { /* 损坏数据 → 忽略 */ }
+}
+
+// mock 进行中：切换控件文案/状态条/输入提示。mode 仍可用（切到 QA 等即可插问）。
+function setMockActive(active, sessionId) {
+  state.mock.active = active;
+  state.mock.sessionId = active ? sessionId : null;
+  if (!active) {
+    state.mock.pendingExit = false;
+    state.mock.lastQuestion = "";
+    state.mock.turns = 0;
+  }
+  if (mockToggle) {
+    mockToggle.textContent = active ? "⏹ 结束 Mock" : "🎤 开始 Mock";
+    mockToggle.setAttribute("aria-pressed", active ? "true" : "false");
+    mockToggle.classList.toggle("active", active);
+  }
+  if (active) {
+    statusMode.textContent = "MOCK";
+    promptInput.placeholder = "直接作答；问号/“解释一下”可插问；说“结束”出复盘…";
+  } else {
+    setMode(modeSelect.value);
+  }
+  persistMock();
+}
+
+// 显式点"结束 Mock"按钮 = 明确退出意图，前端直接进入确认（无需 LLM 判意图）。
+function requestExitConfirm() {
+  state.mock.pendingExit = true;
+  persistMock();
+  addSystem(`确定结束本场模拟面试吗？已进行 ${state.mock.turns || 0} 轮。回复“确定”出复盘与诊断图，或继续作答以取消。`);
+}
+
+// 进行中 mock 的输入分流：显式切到非 Mock 子模式 = 明确插问；否则 auto（后端 4 类语义分流）。
+async function dispatchMockInput(text, addUser) {
+  if (modeSelect.value !== "mock") return sendPrompt(text, { mockAction: "side", addUser });
+  return sendPrompt(text, { mockAction: "auto", addUser });
+}
+
+// 顶层输入路由：mock 进行中，意图（含退出/确认）交后端语义判定。
+async function routeUserText(text) {
+  if (!state.mock.active) {
+    await sendPrompt(text);
+    return;
+  }
+  if (state.mock.pendingExit) {
+    // 等待退出确认：这条回复交后端语义判 confirm/continue。
+    await sendPrompt(text, { mockAction: "confirm_exit", addUser: true });
+    return;
+  }
+  await dispatchMockInput(text, true);
+}
+
+if (mockToggle) {
+  mockToggle.addEventListener("click", async () => {
+    if (state.mock.active) {
+      // 已在等待确认 → 再点即确认结束；否则发起确认。
+      if (state.mock.pendingExit) {
+        state.mock.pendingExit = false;
+        persistMock();
+        await sendPrompt("结束面试", { mockAction: "stop" });
+      } else {
+        requestExitConfirm();
+      }
+    } else {
+      const topic = promptInput.value.trim();
+      promptInput.value = "";
+      setMode("mock");
+      modeSelect.value = "mock";
+      await sendPrompt(topic || "开始模拟面试");
+    }
+  });
+}
+
 function addMessage(role, text, meta = "") {
   const article = document.createElement("article");
   article.className = `message ${role}`;
@@ -72,11 +421,12 @@ function addMessage(role, text, meta = "") {
     <div class="pixel-avatar ${avatarClass}" aria-hidden="true"><span></span></div>
     <div class="message-bubble">
       <div class="message-meta">${safeMeta}</div>
-      <p>${escapeHtml(text)}</p>
+      ${renderRichText(text)}
     </div>
   `;
   conversation.appendChild(article);
   conversation.scrollTop = conversation.scrollHeight;
+  pushHistory({ k: "msg", role, text, meta });
 }
 
 function addSystem(text) {
@@ -85,6 +435,7 @@ function addSystem(text) {
   article.textContent = text;
   conversation.appendChild(article);
   conversation.scrollTop = conversation.scrollHeight;
+  pushHistory({ k: "system", text });
 }
 
 function addActions(actions) {
@@ -100,6 +451,82 @@ function addActions(actions) {
       </ul>
     </div>
   `;
+  conversation.appendChild(article);
+  conversation.scrollTop = conversation.scrollHeight;
+  pushHistory({ k: "actions", actions });
+}
+
+function addImage(url, caption) {
+  if (!url) return;
+  const article = document.createElement("article");
+  article.className = "message agent";
+  article.innerHTML = `
+    <div class="pixel-avatar avatar-agent" aria-hidden="true"><span></span></div>
+    <div class="message-bubble">
+      <div class="message-meta">LearnForge · ${escapeHtml(caption || "Infographic")}</div>
+      <a href="${escapeHtml(url)}" target="_blank" rel="noopener">
+        <img class="result-image" src="${escapeHtml(url)}" alt="${escapeHtml(caption || "infographic")}" loading="lazy" />
+      </a>
+    </div>
+  `;
+  conversation.appendChild(article);
+  conversation.scrollTop = conversation.scrollHeight;
+  pushHistory({ k: "image", url, caption });
+}
+
+const RISK_LABELS = { overclaim: "夸大无证据", no_evidence: "缺证据链", vague: "含糊/过短" };
+
+function addScore(score) {
+  if (!score) return;
+  const dims = score.dims || {};
+  const risks = (score.risk_flags || []).map((r) => RISK_LABELS[r] || r);
+  const riskHtml = risks.length ? `<span class="score-risk">⚠ ${escapeHtml(risks.join("、"))}</span>` : "";
+  const article = document.createElement("article");
+  article.className = "message system score-line";
+  article.innerHTML = `评分 ${escapeHtml(String(score.overall ?? "—"))}/5 ·
+    正确性 ${escapeHtml(String(dims.correctness ?? "-"))}
+    深度 ${escapeHtml(String(dims.depth ?? "-"))}
+    表达 ${escapeHtml(String(dims.clarity ?? "-"))} ${riskHtml}`;
+  conversation.appendChild(article);
+  conversation.scrollTop = conversation.scrollHeight;
+  pushHistory({ k: "score", score });
+}
+
+// 按需出图：渲染一个"生成信息图"按钮，点击才调 /ui/image（出图慢/费钱，不自动跑）。
+function addImageButton(kind, spec, caption) {
+  if (!spec) return;
+  const article = document.createElement("article");
+  article.className = "message agent";
+  article.innerHTML = `
+    <div class="pixel-avatar avatar-agent" aria-hidden="true"><span></span></div>
+    <div class="message-bubble">
+      <div class="message-meta">LearnForge · ${escapeHtml(caption || "Infographic")}</div>
+      <button type="button" class="gen-image-btn">🖼️ 生成${escapeHtml(caption || "信息图")}</button>
+    </div>
+  `;
+  const btn = article.querySelector(".gen-image-btn");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "出图中…（约 10-30s）";
+    try {
+      const resp = await fetch("/ui/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, spec }),
+      });
+      const data = await resp.json();
+      if (data.ok && data.image_url) {
+        addImage(data.image_url, caption);
+        btn.textContent = "✓ 已生成";
+      } else {
+        btn.disabled = false;
+        btn.textContent = `重试生成（${data.error || "失败"}）`;
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = `重试生成（${e.message}）`;
+    }
+  });
   conversation.appendChild(article);
   conversation.scrollTop = conversation.scrollHeight;
 }
@@ -253,8 +680,14 @@ function startThinking() {
   };
 }
 
-async function sendPrompt(text) {
-  addMessage("user", text, `${state.mode.toUpperCase()} · You`);
+async function sendPrompt(text, opts = {}) {
+  const mockAction = opts.mockAction || null;
+  if (opts.addUser !== false) {
+    const tag = mockAction === "side" ? "插问 · You"
+      : state.mock.active ? "MOCK · You" : `${state.mode.toUpperCase()} · You`;
+    addMessage("user", text, tag);
+    touchConversation(text);  // 刷新当前对话标题/时间并置顶
+  }
   const thinking = startThinking();
   chainStatus.textContent = "running";
   setChain([{ agent: "manager", detail: "分析意图并规划下一步" }], 0);
@@ -266,7 +699,14 @@ async function sendPrompt(text) {
     const response = await fetch("/ui/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, mode: state.mode, session_id: state.sessionId }),
+      body: JSON.stringify({
+        text,
+        mode: state.mode,
+        session_id: state.sessionId,
+        mock_session_id: state.mock.sessionId,
+        mock_action: mockAction,
+        mock_question: state.mock.lastQuestion || null,
+      }),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -276,8 +716,52 @@ async function sendPrompt(text) {
     const chain = chainFromData(data);
     setChain(chain, chain.length - 1);
     renderActivity(data);
-    addMessage("agent", summarizeResponse(data), "LearnForge · Manager");
+    renderMemoryLog(data.memory);
+    // mock：上一轮作答的判分先于下一题展示。
+    if (data.mock_score) addScore(data.mock_score);
+    const speaker = data.mock ? "LearnForge · Interviewer" : "LearnForge · Manager";
+    addMessage("agent", summarizeResponse(data), speaker);
     addActions(data.next_actions);
+    // 信息图：自动模式已出图(有 URL)→直接渲染；否则给"生成信息图"按钮(按需出图)。
+    if (data.image_url) {
+      addImage(data.image_url, "学习计划信息图");
+    } else if (data.image_spec) {
+      addImageButton("plan", data.image_spec, "学习计划信息图");
+    }
+    const settle = data.settlement;
+    if (settle && settle.diagnosis_image_url) {
+      addImage(settle.diagnosis_image_url, "诊断信息图");
+    } else if (settle && settle.diagnosis && (settle.diagnosis.clusters || []).length) {
+      addImageButton("diagnosis", {
+        clusters: settle.diagnosis.clusters,
+        weak_atoms: settle.diagnosis.weak_atoms,
+        recommendations: settle.diagnosis.recommendations,
+      }, "诊断信息图");
+    }
+    // 记住当前题目与轮次（插问/刷新后用来提醒，长会话不丢状态）。
+    if (data.mock && data.mock.status === "active" && data.reply_text) {
+      state.mock.lastQuestion = data.reply_text;
+    }
+    if (data.mock && typeof data.mock.turn_index === "number") {
+      state.mock.turns = data.mock.turn_index;
+    }
+    // 同步 mock 进行状态（语义触发/退出/确认都走这里，前后端一致）。
+    if (typeof data.mock_active !== "undefined") {
+      if (data.mock_active) {
+        setMockActive(true, data.mock_session_id);
+        // 退出意图待确认 → 置 pendingExit；已解决 → 清除（后端是唯一裁决者）。
+        state.mock.pendingExit = !!data.needs_exit_confirm;
+      } else if (state.mock.active) {
+        setMockActive(false);
+      }
+    }
+    if (data.exit_cancelled) addSystem("已取消结束，面试继续。");
+    if (data.escalated) addSystem("已带着面试上下文转入常规流程（诊断 / 计划 / 问答）。");
+    persistMock();
+    // 插问回答后，提醒仍在面试、当前待答题目。
+    if (data.mock_side && state.mock.active && state.mock.lastQuestion) {
+      addSystem(`（面试继续）当前待答问题：${state.mock.lastQuestion}`);
+    }
     chainStatus.textContent = data.status || "ok";
   } catch (err) {
     if (err.name === "AbortError") {
@@ -300,7 +784,7 @@ composer.addEventListener("submit", async (event) => {
   promptInput.value = "";
   promptInput.disabled = true;
   try {
-    await sendPrompt(text);
+    await routeUserText(text);
   } catch (error) {
     addMessage("agent", `请求失败：${error.message}`, "LearnForge · error");
     logLine("Error", error.message);
@@ -314,3 +798,8 @@ composer.addEventListener("submit", async (event) => {
 setMode("qa");
 setView("chat");
 loadFiles();
+initConversations();
+// mock 横幅是瞬时提示，不写回 history（避免刷新后重复堆积）。
+state.replaying = true;
+restoreMock();
+state.replaying = false;

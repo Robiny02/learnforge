@@ -1,8 +1,8 @@
-"""LangGraph 主图（Design §2b / §5）——Manager plan-and-execute substrate。
+"""LangGraph 主图（Design §2b / §5）——Manager ReAct 编排 substrate。
 
-    START → manager_plan → manager_execute(按依赖序派发 + replan) → manager_aggregate → END
+    START → manager_plan(记忆读取) → manager_execute(ReAct 循环：看结果逐步决策) → manager_aggregate → END
 
-单意图与复合任务（诊断→改路径→建议 mock，Design §5.6）统一走 execute；mock 多轮 interrupt/resume
+单意图与复合任务（诊断→改路径→建议 mock，Design §5.6）统一走 ReAct 循环；mock 多轮 interrupt/resume
 在 mock 子图内（graph/mock_graph.py）。
 """
 
@@ -34,13 +34,14 @@ def compile_main_graph():
     return build_main_graph().compile()
 
 
-if __name__ == "__main__":
+def _demo() -> None:
+    """4 个意图 smoke（无需 API key）。供 `python -m learnforge.graph.main_graph` 与本模块直接运行复用。"""
     app = compile_main_graph()
     cases = [
         "乐观锁还是悲观锁?",
         "帮我生成学习计划",
         "诊断我的弱点",
-        "快面试了帮我准备一下",  # 复合 workflow 5.6
+        "快面试了帮我准备一下",  # 复合 §5.6（ReAct 续跑：diagnosis→planning）
     ]
     for intent_input in cases:
         result = app.invoke(
@@ -57,3 +58,7 @@ if __name__ == "__main__":
         print(f"  reply={result.get('reply_text')}")
         print(f"  next_actions={result.get('next_actions')}")
     print("OK: main graph compiled and ran START->END.")
+
+
+if __name__ == "__main__":
+    _demo()

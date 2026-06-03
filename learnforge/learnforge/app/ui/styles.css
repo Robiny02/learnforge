@@ -189,8 +189,115 @@ select {
 
 #view-chat.active {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: 232px minmax(0, 1fr) 330px;
   gap: 18px;
+}
+
+.conv-rail {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(255, 246, 210, 0.9);
+  border: var(--pixel-border);
+  box-shadow: 6px 6px 0 var(--shadow), inset 0 0 0 2px rgba(255, 255, 255, 0.46);
+}
+
+.conv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+#newChatBtn {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+  color: var(--paper-ink);
+  background: #ffe08a;
+  border: 2px solid #245f82;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+#newChatBtn:hover {
+  background: #ffd35e;
+}
+
+.conv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.conv-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted, #6b5a33);
+}
+
+.conv-item {
+  position: relative;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 22px 9px 10px;
+  color: var(--paper-ink);
+  background: rgba(255, 249, 223, 0.7);
+  border: 2px solid transparent;
+  border-left: 3px solid #b8862a;
+}
+
+.conv-item:hover {
+  background: rgba(255, 249, 223, 0.95);
+}
+
+.conv-item.active {
+  border-color: #245f82;
+  background: #fff0bc;
+}
+
+.conv-item strong {
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-item small {
+  font-size: 10.5px;
+  color: #8a743d;
+}
+
+.conv-del {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1;
+  color: #b1542f;
+  opacity: 0;
+}
+
+.conv-item:hover .conv-del {
+  opacity: 1;
+}
+
+.conv-del:hover {
+  color: #e0331a;
 }
 
 .chat-card,
@@ -495,6 +602,62 @@ h1 {
   box-shadow: 4px 4px 0 rgba(92, 53, 31, 0.2), inset 0 -4px rgba(92, 53, 31, 0.06);
 }
 
+.result-image {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  margin-top: 6px;
+  border: 3px solid var(--wood-dark);
+  box-shadow: 4px 4px 0 rgba(92, 53, 31, 0.2);
+  image-rendering: auto;
+}
+
+.mock-toggle {
+  margin-left: 8px;
+  padding: 6px 12px;
+  border: 3px solid var(--wood-dark);
+  background: var(--paper, #f4ead2);
+  color: var(--paper-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 rgba(92, 53, 31, 0.2);
+}
+
+.mock-toggle.active {
+  background: #d9483b;
+  color: #fff;
+}
+
+.gen-image-btn {
+  margin-top: 4px;
+  padding: 7px 14px;
+  border: 3px solid var(--wood-dark);
+  background: var(--paper, #f4ead2);
+  color: var(--paper-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 rgba(92, 53, 31, 0.2);
+}
+.gen-image-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.message.score-line {
+  font-size: 13px;
+  color: var(--paper-ink);
+  opacity: 0.92;
+}
+
+.score-risk {
+  margin-left: 8px;
+  color: #b3402f;
+  font-weight: 600;
+}
+
 .message-bubble::after {
   content: "";
   position: absolute;
@@ -528,6 +691,46 @@ h1 {
 
 .message p {
   margin: 0;
+}
+
+.rich-text {
+  display: grid;
+  gap: 8px;
+}
+
+.rich-text h3,
+.rich-text h4,
+.rich-text h5 {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.25;
+  color: #2d2118;
+}
+
+.rich-text p {
+  margin: 0;
+}
+
+.rich-text ul,
+.rich-text ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.rich-text li + li {
+  margin-top: 4px;
+}
+
+.rich-text strong {
+  color: #281a10;
+}
+
+.rich-text code {
+  padding: 1px 5px;
+  border: 1px solid rgba(92, 53, 31, 0.28);
+  background: rgba(255, 255, 255, 0.52);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
 }
 
 .pixel-avatar {
@@ -818,6 +1021,30 @@ h1 {
   color: #245f82;
   font-weight: 900;
   margin-right: 8px;
+}
+
+#memoryLog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+#memoryLog .mem-loaded {
+  border-left-color: #2f8f4e;
+}
+
+#memoryLog .mem-loaded span {
+  color: #2f8f4e;
+}
+
+#memoryLog .mem-evt {
+  border-left-color: #b8862a;
+}
+
+#memoryLog .mem-evt span {
+  color: #b8862a;
 }
 
 .quiet-window {

@@ -65,6 +65,8 @@ QA_SKILL = SkillSpec(
         "不改学习计划、不做长期诊断、不写掌握度。"
     ),
     allowed_tools=[
+        "llm.complete",
+        "llm.complete_structured",
         "agent.router",
         "agent.synthesizer",
         "agent.verifier",
@@ -77,6 +79,8 @@ QA_SKILL = SkillSpec(
         "mcp.notion.read_page",
     ],
     tool_descriptions={
+        "llm.complete": "Fast direct QA answer when no local evidence is needed.",
+        "llm.complete_structured": "Fast evidence-routing decision for QA.",
         "retrieval.search": "只读检索 LOCAL/SHARED 知识库；不得写 mastery/path。",
         "mcp.web.fetch_url": "Fetch a user-provided URL into a reusable markdown artifact.",
         "mcp.github.repo_summary": "Inspect public GitHub repositories for project/code questions.",
@@ -108,7 +112,7 @@ QA_SKILL = SkillSpec(
             "retrieve": True,
             "verify": True,
             "scopes": ["shared"],
-            "method": "hybrid",
+            "method": "fulltext",
             "tools": ["agent.router", "retrieval.search", "agent.synthesizer", "agent.verifier"],
         },
         "temporal": {
@@ -171,7 +175,17 @@ SYNTHESIZER_SKILL = SkillSpec(
     system_prompt=(
         "你是面向程序员的问答专家。只基于给定证据 + 常识合成回答；"
         "无检索证据时必须显式声明并降低断言强度，禁止无依据断言时效性、禁止编造引用。\n"
-        "每条事实性陈述尽量绑定 source_chunk_id，输出答案正文 draft + 可验证 claims 列表。"
+        "先判断用户意图属于哪一类，再选对应结构：\n"
+        "【概念/八股题】（“X 是什么/原理/区别”）：输出可复习、可面试口述的解释："
+        "1. 核心结论（一句话）；2. 机制/流程（分步骤）；3. 适用场景与取舍；"
+        "4. 常见误区/边界；5. 面试口述版或工程小例子；6. 可继续追问/练习点。\n"
+        "【答题辅导题】（“这道面试题/这类问题我该怎么回答、怎么说、面试官问 X 怎么答”）："
+        "用户要的是能直接照着说的答案，不是名词解释。必须给：考官在考什么 → 可复用答题框架"
+        "（经历题用 STAR）→ 一段有具体内容的示范回答（需本人填写处用【替换成你的真实项目/数据】占位）"
+        "→ 加分点 → 扣分雷区 → 可能的追问。严禁只回『描述你的角色、给出产物、分阶段说明』这类空泛方法论；"
+        "示范内容要具体（真实工具名、典型用法、可量化收益），但不杜撰数字与引用（量化处留占位）。\n"
+        "用户明确要求“简单/一句话/只要结论”时才压缩。每条事实性陈述尽量绑定 source_chunk_id，"
+        "输出答案正文 draft + 可验证 claims 列表。"
     ),
     allowed_tools=["llm.complete_structured"],
     tool_descriptions={"llm.complete_structured": "Sonnet structured answer drafting."},
@@ -197,7 +211,8 @@ VERIFIER_SKILL = SkillSpec(
     system_prompt=(
         "你是事实审查员。逐 claim 比对检索证据：无证据支撑的 claim 降级为不确定并在答案中弱化；"
         "全部 claim 无支撑则 verdict=unverified。只判可验证 claim，主观表述放行，"
-        "不放过无依据的时效性断言。输出 verified_answer + verdict + flagged。"
+        "不放过无依据的时效性断言。保留 Synthesizer 的学习结构，不要把完整解释压扁成一句话；"
+        "只弱化或删除无证据/过度断言的部分。输出 verified_answer + verdict + flagged。"
     ),
     allowed_tools=["llm.complete_structured", "retrieval.search"],
     tool_descriptions={
@@ -220,9 +235,13 @@ PLANNING_SKILL = SkillSpec(
     model_tier=ModelTier.SONNET,
     frontmatter=_front("planning.v1", "learning_planner_subagent", "Produce path diffs without committing writes."),
     system_prompt=(
-        "你是学习规划师。只排程不评判对错。根据目标/现状（generate）或诊断+现有路径（modify），"
-        "对候选 Atom 按 (priority = weakness * goal_relevance / mastery) 排序，按天分桶到 deadline，"
-        "只产出增量 PathDiff（add/remove/reorder + rationale），不全量重写、不超 deadline 硬塞。\n"
+        "你是 LearnForge 的学习规划师，目标是把薄弱点诊断转成可执行、可验收、可复盘的训练路径。"
+        "只排程不评判对错。根据目标/现状（generate）或诊断+现有路径（modify），"
+        "对候选 Atom 按 priority = weakness_severity * goal_relevance * recency / max(mastery,0.2) 排序，"
+        "按天分桶到 deadline。\n"
+        "产出必须有学习设计感：先补阻塞性基础，再安排高频面试点，再穿插 mock/QA 复盘；"
+        "每一天应有明确主题、知识点、练习方式和验收标准（这些写进 rationale，PathDiff 仍只放真实 atom_id）。\n"
+        "只产出增量 PathDiff（add/remove/reorder + rationale），不全量重写、不超 deadline 硬塞。"
         "用户反馈与诊断冲突时以用户为准并在 rationale 标注。"
     ),
     allowed_tools=["llm.complete_structured", "repository.read.atoms", "retrieval.search",
@@ -247,8 +266,19 @@ PLANNING_SKILL = SkillSpec(
     },
     subskill_descriptions={},
     bash=NO_BASH,
-    workflow=["load_candidates", "rank_by_goal_and_weakness", "bucket_by_day", "emit_path_diff", "publish_to_notion"],
-    constraints=["Never commit the path directly.", "Only emit incremental PathDiff, not full replacement."],
+    workflow=[
+        "load_candidates",
+        "rank_by_goal_and_weakness",
+        "bucket_by_day_with_review_and_mock",
+        "emit_path_diff_with_rationale",
+        "publish_polished_report",
+    ],
+    constraints=[
+        "Never commit the path directly.",
+        "Only emit incremental PathDiff, not full replacement.",
+        "Use only real candidate atom_id values in PathDiff.add.",
+        "Make rationale useful to a learner: why this order, what to practice, and how to verify progress.",
+    ],
     input_schema=PlanningInput,
     output_schema=PlanningOutput,
     steps=["read_atoms", "rank", "bucket_by_day", "emit_diff"],
@@ -379,9 +409,12 @@ INTERVIEWER_SKILL = SkillSpec(
     model_tier=ModelTier.SONNET,
     frontmatter=_front("mock.interviewer.v1", "interviewer_subagent", "Ask grounded technical interview questions."),
     system_prompt=(
-        "你是资深技术面试官。只出题与追问，不透露评分、不给标准答案。"
-        "按指定主题与难度出题，结合参考资料但不照抄；不重复已问过的题、不超出指定难度。\n"
-        "输出题目 + 考点 expected_points + 相关 atom_refs。"
+        "你是资深技术面试官（接入 LLMInternSkill 拷打方法论）。只出题与追问，不透露评分、不给标准答案。\n"
+        "核心：跟着候选人的简历 claim / 项目 / 目标 JD 追问，不出泛泛的『请介绍 X』。"
+        "按轮次递进——先探真实边界(你到底做了哪部分/谁主导/有何产物为证)，再深挖技术细节"
+        "(输入输出/数据/模型/系统/指标)，再对齐目标岗位硬要求，最后给情景题(失败/延迟/质量下降/权限)。\n"
+        "对上一轮回答里夸大或无证据的点，直接追问『怎么证明有效/有无数据日志对比』。\n"
+        "结合参考资料但不照抄；不重复已问过的题、不超出指定难度。输出题目 + 考点 expected_points + 相关 atom_refs。"
     ),
     allowed_tools=["llm.complete_structured", "retrieval.search"],
     tool_descriptions={
@@ -404,9 +437,12 @@ JUDGE_SKILL = SkillSpec(
     model_tier=ModelTier.HAIKU,
     frontmatter=_front("mock.judge.v1", "judge_subagent", "Score one answer against expected points."),
     system_prompt=(
-        "你是评分官。只依据 expected_points 与考生回答评分，不被自信措辞带偏、"
-        "不向考生补充正确答案。输出固定 rubric JSON：overall(0-5) + dims(correctness/depth/clarity) "
-        "+ missed_points + confidence。无法判定时给低 confidence。"
+        "你是评分官（接入 LLMInternSkill 真实性边界）。只依据 expected_points 与考生回答评分，"
+        "不被自信措辞带偏、不向考生补充正确答案。\n"
+        "除 rubric 外，标注 risk_flags ⊆ {overclaim, no_evidence, vague}：夸大却无量化口径/证据 → overclaim；"
+        "声称做过却给不出证据链 → no_evidence；含糊或过短撑不住追问 → vague。夸大措辞应扣分而非奖励。\n"
+        "输出固定 JSON：overall(0-5) + dims(correctness/depth/clarity) + missed_points + risk_flags + confidence。"
+        "无法判定时给低 confidence。"
     ),
     allowed_tools=["llm.complete_structured"],
     tool_descriptions={"llm.complete_structured": "Haiku rubric scoring."},
@@ -449,9 +485,11 @@ COACH_SKILL = SkillSpec(
     model_tier=ModelTier.SONNET,
     frontmatter=_front("mock.coach.v1", "coach_subagent", "Summarize one mock interview into actionable review."),
     system_prompt=(
-        "你是面试教练。聚合逐轮评分产出结构化终场复盘：summary / strengths / "
-        "weaknesses / next_steps。每条 weakness 必带 evidence（引哪一轮），不堆砌泛泛建议。"
-        "样本不足（<2 轮）时如实说明不下结论。"
+        "你是面试教练（接入 LLMInternSkill answer-cards）。聚合逐轮评分产出结构化终场复盘："
+        "summary / strengths / weaknesses / next_steps。每条 weakness 必带 evidence（引哪一轮），不堆砌泛泛建议。\n"
+        "对高风险(risk_flags)或低分轮，产出 answer_cards：why_risky / dangerous(会被问穿) / "
+        "passable(承认边界只讲真实做过的) / strong(补样例对比/bad case/取舍) / evidence_needed。"
+        "不奖励夸大，指出该补什么证据。样本不足（<2 轮）时如实说明不下结论。"
     ),
     allowed_tools=["llm.complete_structured"],
     tool_descriptions={"llm.complete_structured": "Sonnet structured review generation."},

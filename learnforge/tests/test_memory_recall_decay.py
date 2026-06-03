@@ -42,6 +42,19 @@ def test_record_writes_file_and_indexes_chunk(mem_dir, tmp_db):
     assert any('"origin": "daily"' in r["metadata"] for r in rows)
 
 
+def test_record_indexes_without_runtime_embedding(mem_dir, tmp_db, monkeypatch):
+    from learnforge.knowledge import ingest
+
+    def boom(texts):
+        raise AssertionError("runtime daily record should not call embeddings")
+
+    monkeypatch.setattr(ingest, "_embed_batch", boom)
+    note = record(kind="qa", text="Q: Redis persistence?\nA: RDB and AOF.",
+                  topic="redis", db_path=tmp_db)
+    assert (mem_dir / f"{note['date'][:10]}.md").exists()
+    assert _recall(tmp_db, "Redis")
+
+
 def test_hybrid_recall_finds_recorded_note(mem_dir, tmp_db):
     record(kind="qa", text="Q: JWT 怎么防篡改？\nA: 用签名校验。", topic="auth", db_path=tmp_db)
     chunks = _recall(tmp_db, "JWT")

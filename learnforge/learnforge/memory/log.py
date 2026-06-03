@@ -161,6 +161,97 @@ def memory_files_overview(db_path: Optional[str] = None) -> List[str]:
     return lines
 
 
+def estimate_tokens(text: str) -> int:
+    """粗略 token 估算（前端展示用，非计费精度）：CJK 1 字≈1 token，其余按 len/4。"""
+    if not text:
+        return 0
+    cjk = sum(
+        1
+        for ch in text
+        if "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ" or "가" <= ch <= "힣"
+    )
+    other = len(text) - cjk
+    return int(cjk + other / 4 + 0.999)
+
+
+def _first_meaningful_line(text: str, limit: int = 48) -> str:
+    """取首个非空、非引用(>)行作摘要；优先 markdown 标题正文。"""
+    for raw in (text or "").splitlines():
+        line = raw.strip().lstrip("#").strip()
+        if not line or line.startswith(">"):
+            continue
+        return line[:limit]
+    return ""
+
+
+def prompt_load_overview(
+    session_id: Optional[str] = None, db_path: Optional[str] = None
+) -> List[dict]:
+    """本轮注入 prompt 的「文件/来源」概览：[{kind, name, summary, tokens}]。
+
+    只覆盖每轮稳定注入的部分（MEMORY.md + 会话短期记忆）；按需召回的 daily 片段
+    属于 RetrievalAgent，作为事件出现在记忆日志里（READ/INJECT「搜索/注入长期记忆」）。
+    全 best-effort，任意来源读失败即跳过，不抛异常。
+    """
+    out: List[dict] = []
+    try:
+        from .files import read_root_memory
+
+        text = read_root_memory()
+        if text:
+            out.append({
+                "kind": "稳定",
+                "name": "MEMORY.md",
+                "summary": _first_meaningful_line(text),
+                "tokens": estimate_tokens(text),
+            })
+    except Exception:
+        pass
+    if session_id:
+        try:
+            from ..storage.repositories import SessionStateRepository
+
+            st = SessionStateRepository(db_path=db_path).get(session_id)
+            if st:
+                parts: List[str] = []
+                if st.get("summary"):
+                    parts.append(str(st["summary"]))
+                rounds = st.get("recent_messages") or []
+                for r in rounds:
+                    parts.append(f"用户：{r.get('user', '')}\n回复：{r.get('reply', '')}")
+                joined = "\n".join(parts)
+                if joined:
+                    out.append({
+                        "kind": "会话",
+                        "name": f"session:{session_id}",
+                        "summary": f"{len(rounds)} 轮原文 + {'早期摘要' if st.get('summary') else '无摘要'}",
+                        "tokens": estimate_tokens(joined),
+                    })
+        except Exception:
+            pass
+    return out
+
+
+def memory_panel_payload(
+    session_id: Optional[str] = None, db_path: Optional[str] = None
+) -> dict:
+    """打包给前端的记忆面板：本轮事件 + 最小摘要 + 注入来源(含 token)。"""
+    return {
+        "events": [
+            {
+                "category": e.category,
+                "action": e.action,
+                "result": e.result,
+                "reason": e.reason,
+                "ts": e.ts,
+            }
+            for e in MEMORY_LOG.events
+        ],
+        "summary": MEMORY_LOG.summary(),
+        "loaded": prompt_load_overview(session_id, db_path),
+    }
+
+
 def memory_index_overview(db_path: Optional[str] = None) -> List[str]:
     """长期记忆的分类概览（§2.2）：按 kind 统计本地 daily 记忆条数。"""
     from ..storage.db import get_connection

@@ -39,6 +39,7 @@ def _index_note(
     content_hash: Optional[str] = None,
     repo: Optional[ChunkRepository] = None,
     db_path: Optional[str] = None,
+    embed: bool = True,
 ) -> None:
     meta = {
         "origin": _DAILY_META_ORIGIN,
@@ -57,6 +58,7 @@ def _index_note(
         metadata=meta,
         db_path=db_path,
         repo=repo,
+        embed=embed,
     )
 
 
@@ -105,6 +107,7 @@ def record(
             importance=note.get("importance"),
             content_hash=h,
             db_path=db_path,
+            embed=False,
         )
         MEMORY_LOG.record(WRITE, "保存记忆", f"成功，类型为 {kind}")
     except Exception:

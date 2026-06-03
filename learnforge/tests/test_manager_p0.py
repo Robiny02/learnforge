@@ -91,8 +91,8 @@ def test_escalate_injects_handoff_summary(tmp_db):
         status="escalate", escalate_action="change_plan", turn_index=3,
         turn_scores=[Score(), Score()],
     )
-    plan = [{"agent": "mock", "task_type": "mock", "deps": []}]
-    responses, meta = mgr.execute(plan, "帮我改计划", trace_id="t-esc")
+    # ReAct 轨迹：输入路由到 mock（关键词 "模拟面试"），mock escalate → Manager 接力生成 handoff。
+    responses, meta, plan = mgr.execute_dynamic("模拟面试练习", trace_id="t-esc")
     assert responses[0].status == Status.ESCALATE
     assert "handoff_summary" in meta and meta["handoff_summary"]
     assert "change_plan" in meta["handoff_summary"]

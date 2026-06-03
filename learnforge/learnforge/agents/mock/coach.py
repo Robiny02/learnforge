@@ -8,9 +8,16 @@ from __future__ import annotations
 
 from typing import List
 
-from ...contracts.agents.mock import CoachInput, CoachOutput, CoachReport, Weakness
+from ...contracts.agents.mock import (
+    AnswerCard,
+    CoachInput,
+    CoachOutput,
+    CoachReport,
+    Weakness,
+)
 from ...contracts.enums import AgentId, EventType
 from ...contracts.message import EventPayload
+from . import interview_skill as IS
 from ..base import BaseAgent
 
 
@@ -27,18 +34,55 @@ class CoachAgent(BaseAgent):
 
         out = self.llm_structured(self._build_prompt(payload), CoachReport, max_tokens=1024)
         report = out if out is not None else self._heuristic_report(payload)
+        # answer cards 恒以确定性规则补全（接入 LLMInternSkill）：高风险/低分轮 → 更优回答建议。
+        if not report.answer_cards:
+            report.answer_cards = self._answer_cards(payload)
         events = self._weakness_events(report)
         return CoachOutput(report=report, events=events)
+
+    @staticmethod
+    def _answer_cards(payload: CoachInput) -> List[AnswerCard]:
+        """为低分或带风险标签的轮次生成 dangerous/passable/strong 回答卡。"""
+        ctx = payload.context
+        role_type = None
+        if ctx is not None:
+            role_type = ctx.role_type or IS.detect_role_type(ctx.jd_text, ctx.target_role)
+        cards: List[AnswerCard] = []
+        for t in payload.turns:
+            s = t.score
+            risky = bool(s and (s.risk_flags or (s.overall is not None and s.overall <= 2)))
+            if not risky or not t.question:
+                continue
+            card = IS.build_answer_card(
+                question=t.question,
+                expected_points=(s.missed_points if s else []),
+                user_answer=t.user_answer,
+                role_type=role_type,
+            )
+            cards.append(AnswerCard(**card))
+            if len(cards) >= 3:
+                break
+        return cards
 
     @staticmethod
     def _build_prompt(payload: CoachInput) -> str:
         lines = []
         for i, s in enumerate(payload.turn_scores):
-            lines.append(f"  第{i + 1}轮 overall={s.overall} missed={s.missed_points}")
+            lines.append(
+                f"  第{i + 1}轮 overall={s.overall} missed={s.missed_points} risk={s.risk_flags}"
+            )
+        ctx = payload.context
+        role_line = ""
+        if ctx is not None:
+            role_type = ctx.role_type or IS.detect_role_type(ctx.jd_text, ctx.target_role)
+            if role_type:
+                role_line = f"目标角色：{role_type}；关注点：{IS.role_focus(role_type)}\n"
         return (
             "对一场模拟面试做终场复盘。逐轮评分：\n" + "\n".join(lines) + "\n"
-            f"覆盖话题：{payload.topic_coverage}\n"
-            "输出 summary / strengths / weaknesses(每条带 evidence 引哪一轮) / next_steps。"
+            f"覆盖话题：{payload.topic_coverage}\n{role_line}"
+            "输出 summary / strengths / weaknesses(每条带 evidence 引哪一轮) / next_steps；\n"
+            "并对高风险或低分轮给出 answer_cards：why_risky / dangerous / passable / strong / "
+            "evidence_needed（承认边界、不奖励夸大、指出该补什么证据）。"
         )
 
     @staticmethod

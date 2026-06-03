@@ -1,11 +1,11 @@
 """ManagerAgent —— 编排者 / 唯一对外入口（Design §3.1 / §2b / §5.6）。
 
-Phase 3：plan-and-execute 复合编排 + 唯一写者。
-- PLAN：LLM 产有依赖子任务 DAG（无 key 回退关键词；复合"准备面试"→ 诊断→改路径）。
-- EXECUTE：按依赖序派发；前序诊断结论注入后续 planning；诊断为空则跳过 modify 改建议先 mock
-  （Design §5.6 异常①）。
+ReAct 动态编排 + 唯一写者：Manager 不预先拆死一张 DAG，而是**每步看子 agent 的结果再决定下一步**。
+- DECIDE（decide_next）：看「已完成步骤 + 各步结果」，从受限动作空间 {qa, planning, diagnosis,
+  mock, finish} 中选下一步；LLM 不可用/解析失败时走确定性兜底（_fallback_next）。
+- LOOP（execute_dynamic）：循环 decide→dispatch→apply，直到 finish / 预算用尽。复合"准备面试"由
+  ReAct 自然续跑：diagnosis → 看结果 → planning；诊断为空则跳过 modify、改建议先 mock（§5.6 异常①）。
 - AGGREGATE：聚合各 worker 结果为用户回复 + next_actions（复合后建议 mock，控制权交回用户，§5.6 P5）。
-- REPLAN：worker error / confidence<0.4 触发重规划，replan_count>2 终止（Design §3.1）。
 - 唯一写者（Design §2a/§4b）：commit_path（路径）、commit_mastery（掌握度，mock S7 结算）。
 - handoff_summary（Q2/§6b）：跨子系统 escalate/handoff 时由 Haiku 生成 ≤512tok 摘要。
 - post_mock 自动诊断（Q5/§5.5）：mock 结算后自动触发一次只读诊断，成本单独记账。
@@ -17,11 +17,11 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from ..config import HANDOFF_SUMMARY_MAX_TOKENS, MAX_REPLAN
+from ..config import HANDOFF_SUMMARY_MAX_TOKENS
 from ..contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult
-from ..contracts.agents.mock import MockInput
+from ..contracts.agents.mock import InterviewContext, MockInput
 from ..contracts.agents.planning import PathDiff, PathItem, PlanningInput
 from ..contracts.agents.qa import QAInput
 from ..contracts.enums import (
@@ -47,16 +47,6 @@ from ..agents.diagnosis import DiagnosisAgent
 from ..agents.mock import MockInterviewAgent
 from ..agents.planning import PlanningAgent
 from ..agents.qa import QAAgent
-
-
-class PlanTask(BaseModel):
-    agent: str  # qa | planning | diagnosis | mock
-    task_type: str = ""
-    deps: List[int] = Field(default_factory=list)
-
-
-class PlanDAG(BaseModel):
-    tasks: List[PlanTask] = Field(default_factory=list)
 
 
 class NextStep(BaseModel):
@@ -94,59 +84,12 @@ class ManagerAgent(BaseAgent):
         self.diagnosis = DiagnosisAgent(db_path=db_path)
         self.mock = MockInterviewAgent(db_path=db_path)
 
-    # ---------------- PLAN ----------------
-    def make_plan(
-        self,
-        user_input: str,
-        active_mock: Optional[str] = None,
-        conversation_summary: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        if active_mock:
-            return [{"agent": "mock", "task_type": "mock", "deps": []}]
-        # 强意图"准备面试"钉死成确定性复合链 diagnosis→planning：
-        # 不交给 LLM 自由拆（它常过度拆解成多个 qa/planning，且会跳过 diagnosis 导致
-        # planning 拿不到候选 atom → 计划落不了库）。诊断给出真实弱点主题，planning 才能取到真实 atom。
-        text = user_input.lower()
-        if any(k in text for k in ("准备", "prepare", "帮我")) and any(
-            k in text for k in ("面试", "interview")
-        ):
-            return [
-                {"agent": "diagnosis", "task_type": "diagnosis", "deps": []},
-                {"agent": "planning", "task_type": "plan.modify", "deps": [0]},
-            ]
-        prompt = f"用户请求：{user_input}\n拆成有依赖的子任务 DAG。"
-        if conversation_summary:
-            # 短期记忆：上一轮会话摘要前置，给规划器跨轮连续性（§6c session 段）。
-            prompt = f"会话摘要（上一轮）：{conversation_summary}\n" + prompt
-        dag = self.llm_structured(prompt, PlanDAG, max_tokens=512)
-        if dag is not None and dag.tasks:
-            return self._dedup_tasks([t.model_dump() for t in dag.tasks])
-        return self._keyword_plan(user_input)
-
-    @staticmethod
-    def _dedup_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """去掉重复子任务（如规划器把一个问题拆成两个相同的 qa）。
-
-        仅当全部任务都无依赖时去重（避免删任务导致 deps 的下标错位）；
-        复合（带 deps 的 DAG）原样保留。
-        """
-        if any(t.get("deps") for t in tasks):
-            return tasks
-        seen = set()
-        out: List[Dict[str, Any]] = []
-        for t in tasks:
-            key = (t.get("agent"), t.get("task_type"))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(t)
-        return out or tasks
-
+    # ---------------- ReAct 兜底意图（仅 LLM 不可用时用，不预拆 DAG）----------------
     @staticmethod
     def _wants_plan(user_input: str) -> bool:
-        """是否应走"诊断→改计划"确定性复合链。
+        """是否属于"诊断→改计划"复合意图（ReAct 兜底用，判定 diagnosis 后是否续到 planning）。
 
-        收窄到两类强意图（避免误吞纯"生成计划"这类单意图——那类走动态路由到 planning）：
+        收窄到两类强意图（避免误吞纯"生成计划"这类单意图——那类直接路由到 planning）：
         - 准备面试（prep + interview）;
         - 同时出现诊断意图 + 计划意图（"诊断…并安排复习计划"）。
         """
@@ -158,40 +101,29 @@ class ManagerAgent(BaseAgent):
         plan_cue = any(k in text for k in ("计划", "复习", "路径", "规划", "plan", "安排"))
         return prep_interview or (diag_cue and plan_cue)
 
-    def plan_or_dynamic(
-        self, user_input: str, active_mock: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], bool]:
-        """决定本轮走"确定性复合"还是"动态规划"。返回 (plan, is_dynamic)。
+    @staticmethod
+    def _wants_planning_outcome(user_input: str) -> bool:
+        """用户是否明确要一份学习计划 / 面试准备计划（在线 ReAct 防过早 finish 的护栏判据）。
 
-        - active_mock → 续跑 mock。
-        - 任何"要计划"的意图 → 钉死 diagnosis→planning：诊断给真实弱点主题，planning 才能取到
-          真实候选 atom（可落库 + grounded）。弱模型多步链不稳，这步必须确定性，不交给动态决策。
-        - 其它（概念问答 / 单独诊断 / 模拟面试）→ 动态规划，Manager 看结果路由到 qa/diagnosis/mock。
+        比 _wants_plan 更宽：也覆盖纯"生成学习计划"（无诊断意图）。仅用强计划信号，避免误吞。
         """
-        if active_mock:
-            return [{"agent": "mock", "task_type": "mock", "deps": []}], False
-        if self._wants_plan(user_input):
-            return [
-                {"agent": "diagnosis", "task_type": "diagnosis", "deps": []},
-                {"agent": "planning", "task_type": "plan.modify", "deps": [0]},
-            ], False
-        return [], True
+        text = (user_input or "").lower()
+        prep_interview = any(k in text for k in ("准备", "prepare", "帮我")) and any(
+            k in text for k in ("面试", "interview")
+        )
+        plan_cue = any(
+            k in text for k in ("计划", "学习路径", "学习路线", "规划", "plan")
+        )
+        return prep_interview or plan_cue
 
     @staticmethod
-    def _keyword_plan(user_input: str) -> List[Dict[str, Any]]:
+    def _keyword_first_agent(user_input: str) -> str:
+        """关键词先验：LLM 不可用时 ReAct 首步兜底选哪个子 agent（非复合单意图）。"""
         text = user_input.lower()
-        # 复合"准备面试"（Design §5.6 "快面试了帮我准备"）→ 诊断 → 改路径。
-        prep_cue = any(k in text for k in ("准备", "prepare", "帮我"))
-        interview_cue = any(k in text for k in ("面试", "interview"))
-        if prep_cue and interview_cue:
-            return [
-                {"agent": "diagnosis", "task_type": "diagnosis", "deps": []},
-                {"agent": "planning", "task_type": "plan.modify", "deps": [0]},
-            ]
         for agent, kws in _KEYWORDS.items():
             if any(kw in text for kw in kws):
-                return [{"agent": agent, "task_type": agent, "deps": []}]
-        return [{"agent": "qa", "task_type": "qa", "deps": []}]
+                return agent
+        return "qa"
 
     # ---------------- EXECUTE ----------------
     def dispatch(self, agent: str, user_input: str, context: Dict[str, Any],
@@ -241,53 +173,42 @@ class ManagerAgent(BaseAgent):
             return ResponsePayload(status=out.status, confidence=conf,
                                    result=out.model_dump(), cost_usd=self.planning.last_cost_usd)
         if agent == "mock":
-            out = self.mock.run(
-                MockInput(topic=user_input, session_id=context.get("mock_session_id"))
-            )
+            # 调用方可在 context["interview_context"] 显式传岗位/JD/简历/项目；否则由统一意图层
+            # 从自然语言抽取（"我面 RAG 实习，拿我项目拷打我" → InterviewContext + 难度/轮次）。
+            ic = context.get("interview_context")
+            mi = MockInput(topic=user_input, session_id=context.get("mock_session_id"))
+            if ic is not None:
+                mi.context = InterviewContext(**ic) if isinstance(ic, dict) else ic
+            else:
+                self._enrich_mock_from_intent(mi, user_input)
+            out = self.mock.run(mi)
             status = Status.ESCALATE if out.status == "escalate" else Status.OK
             return ResponsePayload(status=status, confidence=0.5, result=out.model_dump())
         return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
                                error={"code": "unknown_agent", "message": agent})
 
-    def execute(
-        self, plan: List[Dict[str, Any]], user_input: str, trace_id: Optional[str] = None
-    ) -> Tuple[List[ResponsePayload], Dict[str, Any]]:
-        """按依赖序执行（第一版串行）。返回 (responses, meta)。
+    @staticmethod
+    def _enrich_mock_from_intent(mi: MockInput, user_input: str) -> None:
+        """从自然语言抽取面试槽位填进 MockInput（岗位/JD/简历 → context；难度/轮次）。
 
-        meta 记录复合编排决策（如诊断为空跳过 modify），供 aggregate 生成 next_actions。
+        纯确定性、可离线；无信号则保持原"纯主题"行为。失败不阻断（best-effort）。
         """
-        responses: List[ResponsePayload] = []
-        context: Dict[str, Any] = {"composite": len(plan) > 1, "trace_id": trace_id}
-        meta: Dict[str, Any] = {"composite": len(plan) > 1, "skipped_modify": False,
-                                "suggest_mock": False}
-
-        for task in plan:
-            agent = task["agent"]
-
-            # §5.6 异常①：诊断为空 → 跳过 modify，改建议先做 mock 采集数据。
-            if (
-                agent == "planning"
-                and task.get("task_type") == "plan.modify"
-                and "diagnosis" in context
-                and _is_empty_diagnosis(context["diagnosis"])
-            ):
-                meta["skipped_modify"] = True
-                meta["suggest_mock"] = True
-                responses.append(ResponsePayload(
-                    status=Status.OK, confidence=0.6,
-                    result={"skipped": True, "reason": "诊断信号不足，跳过改计划，建议先做模拟面试采集数据。"},
-                ))
-                continue
-
-            resp = self.dispatch(agent, user_input, context, trace_id=trace_id)
-            responses.append(resp)
-            self._apply_step(agent, resp, context, meta, trace_id)
-
-        return responses, meta
+        try:
+            from ..intent import IntentResolver
+            slots = IntentResolver().mock_frame(user_input).mock_slots()
+        except Exception:  # noqa: BLE001 - 意图增强绝不能打断派发
+            return
+        ctx = slots.to_interview_context()
+        if ctx is not None:
+            mi.context = ctx
+        if slots.difficulty:
+            mi.target_difficulty = slots.difficulty
+        if slots.max_turns:
+            mi.max_turns = slots.max_turns
 
     def _apply_step(self, agent: str, resp: ResponsePayload, context: Dict[str, Any],
                     meta: Dict[str, Any], trace_id: Optional[str]) -> None:
-        """单步善后（静态 execute 与动态规划共用）：handoff 注入 / 诊断入 context / planning 唯一写者落库 + Notion。"""
+        """单步善后（ReAct 循环每步调）：handoff 注入 / 诊断入 context / planning 唯一写者落库 + Notion。"""
         # §6b/§5.4：子系统 escalate 交回 Manager → 生成 handoff 摘要，注入后续任务 context。
         if resp.status == Status.ESCALATE:
             env = self._handoff_from_escalation(resp.result)
@@ -306,19 +227,40 @@ class ManagerAgent(BaseAgent):
                 meta["notion_url"] = self.planning.last_notion_url
             if getattr(self.planning, "last_report_path", None):
                 meta["report_path"] = self.planning.last_report_path
+            if getattr(self.planning, "last_plan_image_path", None):
+                meta["plan_image_path"] = self.planning.last_plan_image_path
+            if getattr(self.planning, "last_plan_image_spec", None):
+                meta["plan_image_spec"] = self.planning.last_plan_image_spec
             if not _is_empty_diagnosis(context.get("diagnosis", {})):
                 meta["suggest_mock"] = True  # 改完路径后建议 mock（§5.6 P5）
 
-    # ---------------- 动态规划（decide_next 循环）----------------
+    # ---------------- ReAct 决策（decide_next → execute_dynamic 循环）----------------
+    def _fallback_next(self, user_input: str, done: List[str],
+                       context: Dict[str, Any]) -> str:
+        """LLM 不可用/解析失败时的确定性 ReAct 兜底——复刻"看结果选下一步"的直觉。
+
+        - 复合"准备面试"/"诊断+计划"意图：diagnosis → planning → finish
+          （诊断为空的跳过/建议 mock 由 execute_dynamic 拦截处理）。
+        - 其余单意图：首步按关键词路由，完成后 finish。
+        """
+        if self._wants_plan(user_input):
+            if "diagnosis" not in done:
+                return "diagnosis"
+            if "planning" not in done:
+                return "planning"
+            return "finish"
+        if not done:
+            return self._keyword_first_agent(user_input)
+        return "finish"
+
     def decide_next(self, user_input: str, done: List[str],
                     responses: List[ResponsePayload], context: Dict[str, Any]) -> str:
         """看已完成步骤 + 各步结果，决定下一个子 agent 或 finish（动作空间受限、安全）。"""
         from ..llm.client import LLM, LLMStructuredError, LLMUnavailable
 
         valid = ("qa", "planning", "diagnosis", "mock", "finish")
-        kw_first = self._keyword_plan(user_input)[0]["agent"]  # 关键词先验（兜底用）
         if not LLM.available or self.skill is None:
-            return kw_first if not done else "finish"
+            return self._fallback_next(user_input, done, context)
 
         summaries = "\n".join(
             f"- {a}: {str(r.result)[:100]}" for a, r in zip(done, responses)
@@ -330,7 +272,7 @@ class ManagerAgent(BaseAgent):
             "qa=答概念/技术问题；diagnosis=找薄弱点；planning=排学习计划(通常先有 diagnosis)；"
             "mock=模拟面试；finish=用户请求已被满足。"
         )
-        # 用独立 system prompt（不要复用 Manager 的 DAG 规划 prompt，否则模型会输出 {agent,task_type,deps} 与 NextStep 冲突）。
+        # 独立 system prompt：只让模型输出 NextStep.next_agent，不要输出任务结构。
         try:
             self.require_tool("llm.complete_structured")
             obj, res = LLM.complete_structured(
@@ -343,9 +285,21 @@ class ManagerAgent(BaseAgent):
         except (LLMUnavailable, LLMStructuredError):
             nxt = ""
         if nxt not in valid:
-            nxt = kw_first if not done else "finish"  # 非法/解析失败 → 关键词兜底
+            nxt = self._fallback_next(user_input, done, context)  # 非法/解析失败 → 确定性兜底
         if not done and nxt == "finish":
-            nxt = kw_first  # 首步不允许直接 finish（否则一上来就空转）
+            nxt = self._fallback_next(user_input, [], context)  # 首步不允许直接 finish（否则空转）
+        # 护栏（在线 ReAct）：用户明确要学习计划/面试准备计划时，planning 跑之前不允许 finish——
+        # 弱模型常在 diagnosis 后过早收尾。这不是恢复固定 DAG，只拦"提前结束"，下一步仍由 ReAct 推进：
+        # 复合意图先补 diagnosis 再到 planning；诊断为空 → planning 由 execute_dynamic 拦成"跳过+建议 mock"。
+        if (
+            nxt == "finish"
+            and "planning" not in done
+            and self._wants_planning_outcome(user_input)
+        ):
+            if self._wants_plan(user_input) and "diagnosis" not in done:
+                nxt = "diagnosis"
+            else:
+                nxt = "planning"
         return nxt
 
     def execute_dynamic(
@@ -386,6 +340,12 @@ class ManagerAgent(BaseAgent):
             executed.append({"agent": nxt})
             done.append(nxt)
 
+            # 早停：qa 是叶子能力，成功产出面向用户的答案即终态，无需再花一次 decide_next 去确认 finish
+            # （纯 ReAct 路由开销，简单八股可省一次 LLM 往返）。仅对 qa 生效——diagnosis 可能是
+            # 复合"准备面试"的前缀（后接 planning），不能早停。
+            if nxt == "qa" and resp.status == Status.OK:
+                break
+
         if not executed:  # 模型一上来就 finish 的兜底：至少回答一次
             resp = self.dispatch("qa", user_input, context, trace_id=trace_id)
             responses.append(resp)
@@ -407,16 +367,20 @@ class ManagerAgent(BaseAgent):
             trace_id=trace_id,
         )
 
-    def execute_with_replan(
-        self, plan: List[Dict[str, Any]], user_input: str, trace_id: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], List[ResponsePayload], Dict[str, Any], int]:
-        responses, meta = self.execute(plan, user_input, trace_id=trace_id)
-        replan_count = 0
-        while self._needs_replan(responses) and replan_count < MAX_REPLAN:
-            replan_count += 1
-            plan = self.make_plan(user_input)
-            responses, meta = self.execute(plan, user_input, trace_id=trace_id)
-        return plan, responses, meta, replan_count
+    def run_active_mock(
+        self, user_input: str, session_id: str, trace_id: Optional[str] = None
+    ) -> Tuple[List[ResponsePayload], Dict[str, Any], List[Dict[str, Any]]]:
+        """续跑进行中的 mock：单步派发 mock 子系统（多轮 interrupt/resume 在 mock 子图内）。
+
+        不走 ReAct 路由——会话已锚定在 mock，直接 dispatch；返回 (responses, meta, executed)。
+        """
+        context: Dict[str, Any] = {"composite": False, "trace_id": trace_id,
+                                   "mock_session_id": session_id}
+        meta: Dict[str, Any] = {"composite": False, "skipped_modify": False,
+                                "suggest_mock": False, "dynamic": False}
+        resp = self.dispatch("mock", user_input, context, trace_id=trace_id)
+        self._apply_step("mock", resp, context, meta, trace_id)
+        return [resp], meta, [{"agent": "mock"}]
 
     # ---------------- 埋点 / 事件（best-effort）----------------
     def _write_trace(self, agent: str, resp: ResponsePayload, trace_id: Optional[str],
@@ -660,22 +624,6 @@ class ManagerAgent(BaseAgent):
         except Exception:
             return None
 
-    @staticmethod
-    def _needs_replan(responses: List[ResponsePayload]) -> bool:
-        """error 必触发；低置信触发，但排除"诚实低置信"（诊断数据不足 / 受控跳过 / escalate）。
-
-        诊断只读且数据不足时返回低置信是合法终态，重规划同一 DAG 无意义（Design §3.1 语义）。
-        """
-        for r in responses:
-            if r.status == Status.ERROR:
-                return True
-            if r.status in (Status.ESCALATE, Status.NEEDS_INPUT):
-                continue
-            honest_low = "weak_atoms" in r.result or r.result.get("skipped")
-            if r.confidence < 0.4 and not honest_low:
-                return True
-        return False
-
     # ---------------- AGGREGATE ----------------
     def aggregate(
         self,
@@ -715,6 +663,8 @@ class ManagerAgent(BaseAgent):
             next_actions.append(f"📘 学习计划已同步到 Notion：{meta['notion_url']}")
         if meta.get("report_path"):
             next_actions.append(f"📄 学习计划报告已生成：{meta['report_path']}")
+        if meta.get("plan_image_path"):
+            next_actions.append(f"🖼️ 学习计划信息图已生成：{meta['plan_image_path']}")
         if meta.get("suggest_mock"):
             # §5.6 P5：建议 mock，但不自动启动（控制权交回用户）。
             next_actions.append("建议进行一场模拟面试以巩固/采集数据（需你确认后开始，系统不会自动开始）。")
@@ -722,11 +672,15 @@ class ManagerAgent(BaseAgent):
             # §6b：mock 升级交回 Manager，已生成交接摘要供后续深入。
             next_actions.append("已根据模拟面试中的难点生成交接摘要，可转入问答/诊断进一步深入。")
 
+        from ..integrations.gpt_image import asset_url
+
         return {
             "reply_text": reply,
             "citations": [],
             "next_actions": next_actions,
             "status": status.value,
+            "image_url": asset_url(meta.get("plan_image_path")),
+            "image_spec": meta.get("plan_image_spec"),  # 供前端按需出图（无 image_url 时）
         }
 
     @staticmethod
@@ -767,12 +721,14 @@ class ManagerAgent(BaseAgent):
                 # 注意：不要复用 Manager 的 DAG 规划 system_prompt（那会让模型输出
                 # {agent,task_type,deps} 而非给用户的自然回复）。聚合用独立 prompt。
                 summary = LLM.complete(
-                    prompt="把以下各 worker 的结果整合成一段给用户的简洁中文回复：\n"
+                    prompt="把以下各 worker 的结果整合成给用户的 LearnForge 风格回复：\n"
                     + "\n".join(str(r.result) for r in responses),
                     model_tier=self.skill.spec.model_tier,
                     system=(
-                        "你是回复聚合器。把下游 worker 的结构化结果整合成自然、简洁、面向用户的中文回复；"
-                        "直接给结论，不要输出 JSON、不要输出任务/计划结构、不要罗列字段名。"
+                        "你是 LearnForge 回复聚合器。保留下游 worker 的结构化价值，输出自然中文；"
+                        "不要输出 JSON 字段名。QA 回答要保留核心结论、机制、取舍、误区/练习点；"
+                        "计划/诊断要保留优先级依据、每日目标、验收标准和下一步行动。"
+                        "避免把多步结果压成一句“已完成”。"
                     ),
                     max_tokens=512,
                 )
@@ -787,20 +743,19 @@ class ManagerAgent(BaseAgent):
             return "诊断信号不足，已跳过改计划；建议先做一场模拟面试采集数据后再优化路径。"
         return f"[stub aggregate] 已收集 {len(responses)} 个 worker 结果。"
 
-    # ---------------- 复合一站式（供 app/测试，Design §5.6）----------------
+    # ---------------- 一站式入口（供 app/测试，Design §5.6）----------------
     def handle(self, user_input: str, active_mock: Optional[str] = None,
                trace_id: Optional[str] = None) -> Dict[str, Any]:
         trace_id = trace_id or str(uuid.uuid4())
-        plan, is_dynamic = self.plan_or_dynamic(user_input, active_mock)
-        replan_count = 0
-        if is_dynamic:
-            # Manager 动态规划：看子 agent 结果逐步决策（动作空间=5 子 agent + finish）。
-            responses, meta, plan = self.execute_dynamic(user_input, trace_id=trace_id)
+        if active_mock:
+            # 会话锚定在进行中的 mock → 直接续跑，不走 ReAct 路由。
+            responses, meta, plan = self.run_active_mock(user_input, active_mock, trace_id)
         else:
-            responses, meta = self.execute(plan, user_input, trace_id=trace_id)
+            # Manager 作为 ReAct 编排者：每步看子 agent 结果逐步决策（动作空间=4 子 agent + finish）。
+            responses, meta, plan = self.execute_dynamic(user_input, trace_id=trace_id)
         agg = self.aggregate(responses, plan, meta)
         agg["plan"] = plan
-        agg["replan_count"] = replan_count
+        agg["replan_count"] = 0  # ReAct 无 replan 循环；保留字段做向后兼容。
         agg["trace_id"] = trace_id
         return agg
 
@@ -993,5 +948,20 @@ class ManagerAgent(BaseAgent):
             diagnosis = None
         # 把本场薄弱点/反馈写入 daily 记忆（kind=weak 慢衰减）。
         self._remember_mock(session_id, updates, diagnosis)
+        # 出图改为按需（前端经 /ui/image 触发）；仅 LF_GPT_IMAGE_AUTO 开启时在结算里同步出图。
+        diagnosis_image_path = None
+        try:
+            from ..integrations import gpt_image as _gpt_image
+
+            if diagnosis and diagnosis.get("clusters") and _gpt_image.auto_enabled():
+                res = _gpt_image.generate_diagnosis_chart(
+                    clusters=diagnosis.get("clusters") or [],
+                    weak_atoms=diagnosis.get("weak_atoms") or [],
+                    recommendations=diagnosis.get("recommendations") or [],
+                )
+                if res.get("ok"):
+                    diagnosis_image_path = res.get("path")
+        except Exception:
+            diagnosis_image_path = None
         return {"mastery_committed": committed, "diagnosis": diagnosis,
-                "diagnosis_cost_usd": diag_cost}
+                "diagnosis_cost_usd": diag_cost, "diagnosis_image_path": diagnosis_image_path}

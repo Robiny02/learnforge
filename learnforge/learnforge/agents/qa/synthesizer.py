@@ -7,23 +7,99 @@ from ...contracts.enums import AgentId
 from ..base import BaseAgent
 
 
+# 「答题辅导」意图：用户问的不是"X 是什么"，而是"这道面试题/问题我该怎么回答"。
+# 命中后切到示范答案模板（给可直接套用的话术 + 占位），而不是概念名词解释。
+_INTERVIEW_COACH_CUES = (
+    "怎么回答", "如何回答", "怎么答", "如何作答", "怎么作答", "怎么说", "如何说",
+    "面试官问", "面试官让", "面试问", "被问到", "被问起", "问我", "如果问",
+    "怎么聊", "如何展开", "怎么展开", "怎么讲", "如何讲这个", "这题怎么", "这道题怎么",
+    "怎么准备这个问题", "如何回应",
+)
+
+
+def _is_interview_coaching(question: str) -> bool:
+    q = (question or "").lower()
+    return any(cue in q for cue in _INTERVIEW_COACH_CUES)
+
+
 class SynthesizerAgent(BaseAgent):
     agent_id = AgentId.SYNTHESIZER
 
     def run(self, payload: SynthesizerInput) -> SynthesizerOutput:
         evidence = self._format_evidence(payload)
         atoms = ", ".join(a.title for a in payload.scoped_atoms) if payload.scoped_atoms else "无"
-        prompt = (
+        head = (
             f"问题：{payload.question}\n"
             f"检索证据：\n{evidence}\n"
             f"相关 Atom：{atoms}\n"
             f"项目上下文：{payload.project_context or '无'}\n"
-            "基于证据合成回答；无证据则显式声明并弱化断言。输出 draft 与 claims。"
         )
-        out = self.llm_structured(prompt, SynthesizerOutput, max_tokens=1536)
+        if _is_interview_coaching(payload.question):
+            prompt = head + (
+                "用户在问『这道面试题/这类问题我该怎么回答』，要的是可以直接照着说的答案，"
+                "不是名词解释。务必给出有具体内容的示范回答，绝不能只讲"
+                "『描述你的角色、给出产物、分阶段说明』这类空泛的方法论。\n"
+                "请用 Markdown 分节，按这些标题输出：\n"
+                "### 考官在考什么 —— 这道题真正想考察的能力/信号（1-3 条）。\n"
+                "### 答题框架 —— 一个可复用的结构（如 场景→具体怎么做→如何把关验证→收益与反思；"
+                "经历题用 STAR）。\n"
+                "### 可直接套用的示范回答 —— 写一段完整、口语化、有真实细节的样例答案，"
+                "把需要本人填写的地方用【替换成你的真实项目/数据/工具】这样的占位标出；"
+                "示范内容要具体（举出真实工具名、典型用法、可量化的收益），不能是空壳。\n"
+                "### 加分点 —— 怎么让回答更可信：具体例子、量化指标、权衡取舍、踩过的坑。\n"
+                "### 别这么答（扣分点）—— 常见雷区：泛泛而谈、夸大无证据、只说优点不谈把关/风险。\n"
+                "### 可能的追问 —— 面试官大概率会追问什么，提前准备（2-4 条）。\n"
+                "有检索证据就用来充实细节；无证据时凭通用工程常识给具体示范，但不要编造引用或杜撰数字"
+                "（量化处用占位让用户填真实数据）。每节用短段落或 bullet。输出 draft 与 claims。"
+            )
+        else:
+            prompt = head + (
+                "基于证据合成回答；无证据则显式声明并弱化断言。\n"
+                "回答应符合 LearnForge 的学习目标：不是短定义，而是可复习、可面试、可行动。\n"
+                "高频八股/概念题至少覆盖 7 层：一句话结论、机制流程、关键配置/参数、"
+                "故障窗口或边界条件、场景取舍、常见误区、面试追问/口述版。"
+                "不要只写名词解释；要给工程上怎么选、为什么这么选、哪里会踩坑。\n"
+                "请用 Markdown 分节，优先使用这些标题：### 核心结论、### 机制/流程、"
+                "### 关键细节、### 场景与取舍、### 常见误区、### 面试追问、### 面试口述版。"
+                "每节用短段落或 bullet，避免整段堆在一起。\n"
+                "如果用户明确要求极简，再压缩到 1-3 句。输出 draft 与 claims。"
+            )
+        out = self.llm_structured(prompt, SynthesizerOutput, max_tokens=2304)
         if out is not None:
             return out
         # 回退：无 LLM 时给占位草稿（链路通）。
+        if _is_interview_coaching(payload.question):
+            return SynthesizerOutput(
+                draft=(
+                    "### 考官在考什么\n"
+                    "- 你是否真的动手做过，而不是只会背概念；\n"
+                    "- 你有没有判断力与把关意识（怎么验证、怎么兜底）。\n\n"
+                    "### 答题框架\n"
+                    "场景 → 具体怎么做 → 如何把关/验证 → 收益与反思。\n\n"
+                    "### 可直接套用的示范回答\n"
+                    "“在【替换成你的真实项目】里，我主要把它用在【替换成具体环节，如写单测/排查日志/重构】，"
+                    "做法是【替换成具体步骤】；为避免它出错，我会【替换成你的验证方式，如跑测试、对照文档、code review】，"
+                    "最后【替换成可量化收益，如把某任务耗时从 X 降到 Y】。”\n\n"
+                    "### 加分点\n举一个具体例子 + 一个可量化收益 + 一处你主动发现并纠正它错误的经历。\n\n"
+                    "### 别这么答\n泛泛说“提高效率”却没有例子；夸大成“全靠它”；只说优点不谈如何把关。\n\n"
+                    "### 可能的追问\n它给的结果错了你怎么发现？哪些场景你不会用它？收益怎么衡量？"
+                ),
+                claims=[],
+            )
+        if payload.retrieved:
+            snippets = "\n".join(
+                f"- {c.text[:180]}" for c in payload.retrieved[:4]
+            )
+            return SynthesizerOutput(
+                draft=(
+                    f"基于本地知识库，我先给你一个可复习版回答：\n\n"
+                    f"**核心结论**：{payload.question} 可以从定义、机制、适用场景和误区四层理解。\n\n"
+                    f"**检索到的关键依据**：\n{snippets}\n\n"
+                    "**面试表达建议**：先用一句话说清概念，再补机制和取舍；如果涉及生产系统，"
+                    "最好补一个具体例子或失败场景。"
+                ),
+                claims=[],
+            )
         note = "" if payload.retrieved else "（未检索到本地证据，以下为通用回答）"
         return SynthesizerOutput(draft=f"[stub synthesizer]{note}", claims=[])
 

@@ -53,14 +53,17 @@ class MockInterviewAgent(BaseAgent):
     # ------------------------------------------------------------- 公共入口
     def run(self, payload: MockInput) -> MockOutput:
         session_id = payload.session_id or f"mock-{uuid.uuid4().hex[:8]}"
-        if payload.user_answer is None and payload.user_interrupt is None:
+        if (payload.user_answer is None and payload.user_interrupt is None
+                and payload.control_action is None):
             return self.start(
-                session_id, payload.topic, payload.target_difficulty, payload.max_turns
+                session_id, payload.topic, payload.target_difficulty, payload.max_turns,
+                context=payload.context,
             )
-        return self.answer(session_id, payload.user_answer, payload.user_interrupt)
+        return self.answer(session_id, payload.user_answer, payload.user_interrupt,
+                           payload.control_action)
 
     def start(self, session_id: str, topic: str, difficulty: int = 3,
-              max_turns: int = 10) -> MockOutput:
+              max_turns: int = 10, context: Optional[Any] = None) -> MockOutput:
         self.require_tool("mock.checkpoint")
         if self.mock_repo is not None:
             try:
@@ -75,17 +78,21 @@ class MockInterviewAgent(BaseAgent):
                 "topic": topic,
                 "difficulty": difficulty,
                 "max_turns": max_turns,
+                # 候选人材料 + 目标岗位上下文经 checkpoint 持久化整场可用（接入 LLMInternSkill）。
+                "context": context.model_dump() if context is not None else None,
             },
             config=config,
         )
         return self._to_output(session_id, result, config)
 
     def answer(self, session_id: str, user_answer: Optional[str] = None,
-               user_interrupt: Optional[str] = None) -> MockOutput:
+               user_interrupt: Optional[str] = None,
+               control_action: Optional[str] = None) -> MockOutput:
         self.require_tool("mock.checkpoint")
         config = {"configurable": {"thread_id": session_id}}
         result = self.graph.invoke(
-            Command(resume={"user_answer": user_answer, "user_interrupt": user_interrupt}),
+            Command(resume={"user_answer": user_answer, "user_interrupt": user_interrupt,
+                            "control_action": control_action}),
             config=config,
         )
         return self._to_output(session_id, result, config)
@@ -106,6 +113,7 @@ class MockInterviewAgent(BaseAgent):
             return MockOutput(
                 session_id=session_id, status="active",
                 question=(intr or {}).get("question"),
+                followup=(intr or {}).get("followup"),  # 即时控制的提示/答案/点评（里程碑2）
                 turn_scores=scores, turn_index=turn_index,
             )
 
@@ -114,6 +122,7 @@ class MockInterviewAgent(BaseAgent):
             return MockOutput(
                 session_id=session_id, status="escalate",
                 escalate_action=values.get("action"),
+                handoff_summary=values.get("handoff_summary"),
                 turn_scores=scores, turn_index=turn_index,
             )
         # 终场复盘（settled）。
@@ -132,6 +141,17 @@ class MockInterviewAgent(BaseAgent):
             review=CoachReport(**review) if review else None,
             turn_scores=scores, turn_index=turn_index, events=events,
         )
+
+    def handoff_summary(self, session_id: str) -> str:
+        """读当前会话状态，拼一句交接摘要（escalate 时交回常规链路，§6b）。"""
+        from .handoff import build_handoff_summary
+
+        config = {"configurable": {"thread_id": session_id}}
+        try:
+            values = self.graph.get_state(config).values or {}
+        except Exception:
+            values = {}
+        return build_handoff_summary(values)
 
     # mastery 更新交给 Manager（唯一写者）——供结算后读取。
     def mastery_updates(self, session_id: str) -> list:

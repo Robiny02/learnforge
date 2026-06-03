@@ -56,14 +56,15 @@ class MainState(TypedDict, total=False):
     active_mock_session_id: Optional[str]
 
     # Manager 编排态
-    plan: List[Dict[str, Any]]      # DAG 子任务列表（{agent, task_type, deps}）
+    plan: List[Dict[str, Any]]      # ReAct 实际执行轨迹（[{agent}, …]，由 execute_dynamic 产出）
     responses: List[Dict[str, Any]] # 各 worker 的 ResponsePayload（序列化）
-    replan_count: int
-    _meta: Dict[str, Any]           # 复合编排决策（skipped_modify / suggest_mock…）
-    _dynamic: bool                  # True=本轮走 Manager 动态规划（decide_next 循环）
+    replan_count: int               # 向后兼容字段，ReAct 无 replan 循环，恒为 0
+    _meta: Dict[str, Any]           # 编排决策（skipped_modify / suggest_mock / handoff_summary…）
 
     # 输出（对用户）
     reply_text: Optional[str]
     status: Optional[str]
     citations: List[Citation]
     next_actions: List[str]
+    image_url: Optional[str]  # 学习计划/诊断信息图的 HTTP URL（/assets/<file>），供前端 <img> 渲染
+    image_spec: Optional[dict]  # 按需出图的 prompt-ready spec（无 image_url 时供前端"生成信息图"按钮）

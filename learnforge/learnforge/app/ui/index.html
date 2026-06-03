@@ -34,6 +34,16 @@
 
       <main class="main-area">
         <section class="view active" id="view-chat">
+          <aside class="conv-rail">
+            <div class="conv-head">
+              <span>对话</span>
+              <button type="button" id="newChatBtn" title="开始新对话">＋ 新对话</button>
+            </div>
+            <div class="conv-list" id="convList">
+              <p class="conv-empty">还没有对话</p>
+            </div>
+          </aside>
+
           <section class="chat-card">
             <div class="farm-backdrop" aria-hidden="true">
               <img src="/ui-static/assets/farm-ide-background.png" alt="" />
@@ -62,6 +72,7 @@
                     <option value="mock">Mock</option>
                   </select>
                 </div>
+                <button type="button" id="mockToggle" class="mock-toggle" aria-pressed="false">🎤 开始 Mock</button>
               </div>
             </div>
 
@@ -99,6 +110,16 @@
               </div>
               <div id="activityLog">
                 <p class="log-line"><span>Ready</span> Farm Studio 已就绪</p>
+              </div>
+            </div>
+
+            <div class="mini-log memory-log">
+              <div class="panel-title compact">
+                <span>Memory</span>
+                <b id="memTokens">0 tok</b>
+              </div>
+              <div id="memoryLog">
+                <p class="log-line"><span>Idle</span> 等待对话，加载的 prompt / 文件会显示在这里</p>
               </div>
             </div>
           </aside>

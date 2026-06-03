@@ -38,21 +38,74 @@ def _normalize_days(days: Any) -> Dict[int, List[str]]:
     return out
 
 
+def _item_focus(item: str) -> str:
+    text = item.strip()
+    if "]" in text and text.startswith("["):
+        return text.split("]", 1)[-1].strip() or text
+    return text
+
+
 def report_generate_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     title = str(args.get("title") or "学习报告")
     summary = str(args.get("summary") or "")
     days = _normalize_days(args.get("days") or {})
     tips = [str(t) for t in (args.get("tips") or [])]
-    lines: List[str] = [f"# 📘 {title}", "", f"> {summary}" if summary else "", ""]
+    total_items = sum(len(items) for items in days.values())
+    lines: List[str] = [
+        f"# {title}",
+        "",
+        "> LearnForge study plan: diagnosis-driven, output-oriented, and mock-reviewable.",
+        "",
+        "## Overview",
+        "",
+        f"- Summary: {summary or '按弱点优先级生成的分天复习计划。'}",
+        f"- Duration: {len(days)} day(s)",
+        f"- Knowledge points: {total_items}",
+        "- Loop: learn -> explain -> drill -> mock -> write weak memory",
+        "",
+        "## Priority Logic",
+        "",
+        "- Put blocking fundamentals before high-frequency interview drills.",
+        "- Keep each day small enough to produce an interview-ready answer, not just passive reading.",
+        "- Use mock/QA feedback to decide whether a point is done or should return to weak memory.",
+        "",
+    ]
     for d in sorted(days):
-        lines.append(f"## 📅 Day {d + 1}")
-        lines += [f"- [ ] {item}" for item in days[d]]
-        lines.append("")
+        items = days[d]
+        focus = " / ".join(_item_focus(x) for x in items[:2]) or "Review"
+        lines += [
+            f"## Day {d + 1}: {focus}",
+            "",
+            "### Learning Targets",
+        ]
+        lines += [f"- {item}" for item in items] or ["- Review and consolidate previous weak points."]
+        lines += [
+            "",
+            "### Practice Tasks",
+            "- Write a 60-second oral explanation for each target.",
+            "- Add one mechanism diagram or step-by-step flow in your own words.",
+            "- Answer one follow-up: failure mode, tradeoff, or production debugging signal.",
+            "",
+            "### Acceptance Criteria",
+            "- Can explain definition, mechanism, tradeoff, and common pitfall without notes.",
+            "- Can answer at least one mock follow-up without becoming vague.",
+            "- Any uncertain answer is recorded as a `weak` memory note for the next diagnosis.",
+            "",
+        ]
     if tips:
-        lines.append("## 🚀 下一步建议")
+        lines.append("## Next Actions")
+        lines.append("")
         lines += [f"- {t}" for t in tips]
         lines.append("")
-    lines.append(f"\n_生成于 {datetime.now().isoformat(timespec='seconds')}_")
+    lines += [
+        "## Review Cadence",
+        "",
+        "- After every 2 study days: run a 3-5 turn mock interview.",
+        "- After every mock: inspect score dimensions and risk flags.",
+        "- Before changing the plan: run diagnosis first, then modify path.",
+        "",
+        f"_Generated at {datetime.now().isoformat(timespec='seconds')}_",
+    ]
     try:
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         fname = f"{_slug(title)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"

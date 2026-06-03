@@ -1,6 +1,6 @@
 """Trajectory 评测门禁（T-EV-10 / Design §9b）——拓扑 + 数据回流 + 写边界接入回归。
 
-离线运行：Manager 走 _keyword_plan 与确定性兜底，系统级不变量可复现。
+离线运行：Manager ReAct 循环走确定性兜底（_fallback_next），系统级不变量可复现。
 """
 
 from learnforge.eval.trajectory_eval import run_eval

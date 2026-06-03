@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ...contracts.agents.mock import JudgeInput, Score, ScoreDims
 from ...contracts.enums import AgentId
+from . import interview_skill as IS
 from ..base import BaseAgent
 
 
@@ -18,12 +19,16 @@ class JudgeAgent(BaseAgent):
         prompt = (
             f"题目：{payload.question}\n考点 expected_points：{payload.expected_points}\n"
             f"考生回答：{payload.user_answer}\n"
-            "按 rubric 评分：overall(0-5)、dims{correctness,depth,clarity}(各0-5)、missed_points、confidence。"
+            "按 rubric 评分：overall(0-5)、dims{correctness,depth,clarity}(各0-5)、missed_points、confidence。\n"
+            "另外标注 risk_flags ⊆ {overclaim, no_evidence, vague}：夸大无证据/声称做过却无证据链/含糊过短。"
         )
-        out = self.llm_structured(prompt, Score, max_tokens=256)
-        if out is not None:
-            return out
-        return self._heuristic(payload)
+        out = self.llm_structured(prompt, Score, max_tokens=320)
+        if out is None:
+            out = self._heuristic(payload)
+        # 风险标签恒以确定性规则兜底补全（接入 LLMInternSkill 真实性边界）。
+        if not out.risk_flags:
+            out.risk_flags = IS.risk_flags_for_answer(payload.user_answer, payload.expected_points)
+        return out
 
     @staticmethod
     def _heuristic(payload: JudgeInput) -> Score:

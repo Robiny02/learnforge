@@ -47,7 +47,7 @@ Model names can be overridden via env vars `LF_HAIKU_MODEL` and `LF_SONNET_MODEL
 |---|---|---|
 | `QAAgent` | Router → Synthesizer → Verifier | Question answering |
 | `PlanningAgent` | — | Generate/modify learning paths |
-| `MockInterviewAgent` | Interviewer, Judge, Strategist, Coach | Multi-turn mock interviews via LangGraph subgraph |
+| `MockInterviewAgent` | Interviewer, Judge, Strategist, Coach | Multi-turn mock interviews via LangGraph subgraph; evidence-bound grilling (see "Interview grilling") |
 | `DiagnosisAgent` | — | Read-only weakness detection (ReAct 3-step) |
 
 `RetrievalAgent` is a shared sub-capability and the **unified retrieval entry point** for a pluggable, two-layer RAG architecture, not directly scheduled by Manager. See "Knowledge base & retrieval" below.
@@ -79,6 +79,18 @@ All contracts are defined before implementations. Key types:
 
 - `main_graph.py`: `START → manager_plan → manager_execute → manager_aggregate → END`
 - `mock_graph.py`: S1_INIT → S2_INTERVIEWER → S3_AWAIT(interrupt) → S4_JUDGE → S5_STRATEGIST → (loop or S6_COACH → S7_SETTLE → END). `interrupt()` at S3 and S_PAUSE; resume via `Command(resume=...)`.
+
+### Interview grilling (`agents/mock/interview_skill.py`)
+
+Evidence-bound interview methodology adapted from the open-source **LLMInternSkill** (MIT, <https://github.com/couragec/llm-intern-skill>) — distilled into a pure, offline, deterministic Python rubric module (attribution in `agents/mock/skill_pack/NOTICE.md`). It powers both the LLM prompts and the no-API-key fallbacks, preserving "chain always passes".
+
+- `MockInput.context: InterviewContext` (optional) carries `target_role` / `jd_text` / `role_type` / `resume_claims` / `projects`. Threaded through the mock subgraph (persisted by checkpointer) into Interviewer/Judge/Coach. **All optional** — omit it and mock falls back to the original topic-only behavior.
+- `interview_skill.py` pure functions: `detect_role_type` (JD→rag/agent/agentic-rl/search-ranking/…), `role_focus`, `extract_claims`, `pick_grill_round` (truth_boundary → technical_depth → jd_deep_dive → scenario), `risk_flags_for_answer` (overclaim/no_evidence/vague), `downgrade` (truth-boundary wording map), `build_answer_card`, `grounded_followup`.
+- **Interviewer** asks claim-anchored follow-ups (uses `last_question`/`last_answer`/`context`) instead of generic "explain X".
+- **Judge** attaches `Score.risk_flags` (deterministic fallback always backfills, even when the LLM scores).
+- **Coach** emits `CoachReport.answer_cards` (dangerous/passable/strong + evidence_needed) for low-score or risky turns.
+- CLI renders per-turn risk flags and the answer cards in the review.
+- **Scope**: only the interview-grilling rubric was vendored; the upstream skill's resume-polish / JD-tailoring / LaTeX / project-scout assets were intentionally left out (out of mock scope). They could later become a separate read-only capability — see `docs/interview-skill-integration.md`.
 
 ### Mastery algorithm (`mastery.py`)
 

@@ -7,7 +7,7 @@
   (3) 无越权写          —— 只 Manager 写 learning_paths / knowledge_atoms.mastery；
                           Diagnosis 全程只读；复合任务部分失败不半写。
 
-全程离线（无 ANTHROPIC_API_KEY）：Manager 走 _keyword_plan 与确定性兜底，断言可复现。
+全程离线（无 ANTHROPIC_API_KEY）：Manager ReAct 循环走确定性兜底（_fallback_next），断言可复现。
 
 用法：
     python -m learnforge.eval.trajectory_eval
@@ -103,21 +103,26 @@ def _table_snapshot(db_path: str, tables: List[str]) -> dict:
 
 # ----------------------------------------------------------------- (1) 拓扑
 def check_topology() -> CheckResult:
-    """Manager.PLAN 的 DAG 与场景预期一致（Design §2c/§5.6）。"""
+    """Manager ReAct 执行轨迹与场景预期一致（Design §2c/§5.6）。
+
+    与旧版"预拆 DAG"不同，这里断言的是 handle() 实际跑出的子 agent 序列（executed），
+    复合"准备面试"由 ReAct 续跑得到 diagnosis→planning。
+    """
     cases: List[Tuple[str, List[str]]] = [
-        ("快面试了帮我准备一下", ["diagnosis", "planning"]),  # 复合 §5.6
+        ("快面试了帮我准备一下", ["diagnosis", "planning"]),  # 复合 §5.6（ReAct 续跑）
         ("乐观锁还是悲观锁？", ["qa"]),
         ("诊断我的弱点", ["diagnosis"]),
         ("帮我制定一份学习计划", ["planning"]),
     ]
-    mgr = ManagerAgent(db_path=_fresh_db())
     bad: List[str] = []
     for user_input, expected in cases:
-        got = [t["agent"] for t in mgr.make_plan(user_input)]
+        # 每例独立 db：避免上一例写入影响诊断/路径，使轨迹可复现。
+        agg = ManagerAgent(db_path=_fresh_db()).handle(user_input)
+        got = [t["agent"] for t in agg["plan"]]
         if got != expected:
             bad.append(f"{user_input!r}: 期望 {expected} 实得 {got}")
     return CheckResult("topology_dag", not bad,
-                       "；".join(bad) or f"{len(cases)} 个场景 DAG 全部匹配")
+                       "；".join(bad) or f"{len(cases)} 个场景 ReAct 轨迹全部匹配")
 
 
 # --------------------------------------------------- (3) 诊断只读（无越权写）
@@ -233,7 +238,17 @@ _CHECKS: List[Callable[[], CheckResult]] = [
 
 
 def run_eval() -> TrajectoryReport:
-    return TrajectoryReport(checks=[c() for c in _CHECKS])
+    # 本评测断言确定性系统级不变量（Design §9b），按模块 docstring 全程离线运行：
+    # 强制关闭 LLM，使 Manager ReAct 走确定性兜底（_fallback_next）逐步续跑，
+    # 轨迹可复现，不受环境是否配置 API key 影响（否则真模型可能在 diagnosis 后提前 finish）。
+    from ..llm.client import LLM
+
+    saved = LLM.available
+    LLM.available = False
+    try:
+        return TrajectoryReport(checks=[c() for c in _CHECKS])
+    finally:
+        LLM.available = saved
 
 
 def format_report(report: TrajectoryReport) -> str:

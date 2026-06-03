@@ -482,24 +482,70 @@ def render_exchange(plan: List[dict], responses: List, agg: dict,
 
 
 # ----------------------------------------------------------------- mock 交互
+_RISK_LABELS = {"overclaim": "夸大无证据", "no_evidence": "缺证据链", "vague": "含糊/过短"}
+
+
 def _score_line(s) -> str:
     ov = s.overall if s.overall is not None else "—"
     d = s.dims
-    return (f"{fg(ACCENT)}评分{RESET} {ov}/5  "
+    line = (f"{fg(ACCENT)}评分{RESET} {ov}/5  "
             f"{fg(MUTED)}正确性{d.correctness} 深度{d.depth} 表达{d.clarity}{RESET}")
+    risks = getattr(s, "risk_flags", None) or []
+    if risks:
+        tags = "、".join(_RISK_LABELS.get(r, r) for r in risks)
+        line += f"  {fg(WARN_C)}⚠ 风险：{tags}{RESET}"
+    return line
+
+
+def _resolve_mock_frame(text: str, width: int):
+    """把 /mock 后的自然语言解析成针对性 MockSlots；缺岗位/简历锚点时主动澄清一轮。"""
+    from .intent import IntentResolver
+
+    resolver = IntentResolver()
+    frame = resolver.mock_frame(text or "")
+    # 最多澄清两轮（够补齐 岗位 / 简历），避免无限追问。
+    for _ in range(2):
+        if not frame.clarification:
+            break
+        print_lines(panel("interviewer · 澄清", [frame.clarification], width,
+                          color=TITLE, title_color=TITLE))
+        try:
+            reply = input(_prompt("you")).strip()
+        except (EOFError, KeyboardInterrupt):
+            print_lines([""])
+            break
+        if not reply or reply in ("/skip", "跳过"):
+            frame.clarification = None
+            break
+        frame = resolver.resume_pending(frame.model_dump(), reply)
+    return frame.mock_slots()
 
 
 def run_mock(mgr, topic: str, width: int) -> None:
+    from .agents.mock.actions import (
+        CHANNEL_CONTROL,
+        CHANNEL_INTERRUPT,
+        Step,
+        channel_of,
+        run_step,
+    )
     from .contracts.agents.mock import MockInput
+    from .intent.mock_turn import classify_mock_input
 
     session_id = f"cli-{uuid.uuid4().hex[:8]}"
-    print_lines(panel(f"mock · {topic}", [
-        f"{fg(MUTED)}多轮模拟面试已开始。直接输入作答；{RESET}",
+    slots = _resolve_mock_frame(topic, width)
+    topic = slots.topic or "综合技术面试"
+    ictx = slots.to_interview_context()
+    role_hint = f" · {slots.target_role}" if slots.target_role else ""
+    print_lines(panel(f"mock · {topic}{role_hint}", [
+        f"{fg(MUTED)}多轮模拟面试已开始。直接输入作答（也可自然说“换个话题/太难了/暂停”）；{RESET}",
         f"{fg(TITLE)}/pause{RESET} 暂停  {fg(TITLE)}/switch <topic>{RESET} 换题  "
         f"{fg(TITLE)}/end{RESET} 结束复盘  {fg(TITLE)}/back{RESET} 退出",
     ], width, color=ESC_C, title_color=ESC_C))
 
-    out = mgr.mock.run(MockInput(topic=topic, session_id=session_id))
+    out = mgr.mock.run(MockInput(
+        topic=topic, session_id=session_id, context=ictx,
+        target_difficulty=slots.difficulty or 3, max_turns=slots.max_turns or 10))
     while True:
         if out.status == "active" and out.question:
             print_lines(panel(f"Q{out.turn_index + 1} · interviewer",
@@ -528,22 +574,25 @@ def run_mock(mgr, topic: str, width: int) -> None:
             continue
         if raw in ("/back", "/quit"):
             return
-        user_answer: Optional[str] = None
-        user_interrupt: Optional[str] = None
+        # 显式 slash 命令直达 interrupt（/switch 带目标，保留其精确措辞）。
         if raw == "/pause":
-            user_interrupt = "暂停"
+            out = mgr.mock.run(MockInput(topic=topic, session_id=session_id, user_interrupt="暂停"))
         elif raw == "/end":
-            user_interrupt = "结束"
+            out = mgr.mock.run(MockInput(topic=topic, session_id=session_id, user_interrupt="结束"))
         elif raw.startswith("/switch"):
             tgt = raw[len("/switch"):].strip()
-            user_interrupt = f"换到 {tgt}" if tgt else "换个话题"
+            out = mgr.mock.run(MockInput(topic=topic, session_id=session_id,
+                                         user_interrupt=f"换到 {tgt}" if tgt else "换个话题"))
         else:
-            user_answer = raw
-
-        out = mgr.mock.run(MockInput(topic=topic, session_id=session_id,
-                                     user_answer=user_answer, user_interrupt=user_interrupt))
-        if out.turn_scores and user_answer is not None:
-            print_lines(["  " + _score_line(out.turn_scores[-1])])
+            # 自然语言：一句话 → 计划（当前单步），经动作执行器按注册表 channel 分发。
+            step = Step(classify_mock_input(out.question or "", raw), raw)
+            answered = channel_of(step.action) not in (CHANNEL_CONTROL, CHANNEL_INTERRUPT)
+            out = run_step(mgr.mock, session_id, step)
+            if out.followup:  # 即时控制的提示/答案/点评/跳过说明。
+                print_lines(panel("interviewer · 即时", [out.followup], width,
+                                  color=TITLE, title_color=TITLE))
+            if out.turn_scores and answered:
+                print_lines(["  " + _score_line(out.turn_scores[-1])])
 
 
 def _render_review(out, width: int) -> None:
@@ -564,6 +613,24 @@ def _render_review(out, width: int) -> None:
     if avg:
         body.append(f"{fg(MUTED)}{len(avg)} 轮平均 {sum(avg)/len(avg):.1f}/5{RESET}")
     print_lines(panel("◆ coach · 复盘", body, width, color=TITLE))
+    _render_answer_cards(r, width)
+
+
+def _render_answer_cards(report, width: int) -> None:
+    """渲染高风险轮的更优回答建议（接入 LLMInternSkill answer-cards）。"""
+    cards = getattr(report, "answer_cards", None) if report else None
+    if not cards:
+        return
+    for c in cards[:3]:
+        body = [
+            f"{fg(MUTED)}{_clip(c.question, width - 8)}{RESET}",
+            f"{fg(ERR_C)}风险{RESET} {_clip(c.why_risky, width - 8)}",
+            f"{fg(WARN_C)}及格{RESET} {_clip(c.passable, width - 8)}",
+            f"{fg(OK_C)}更强{RESET} {_clip(c.strong, width - 8)}",
+        ]
+        if c.evidence_needed:
+            body.append(f"{fg(TITLE)}补证据{RESET} {_clip('、'.join(c.evidence_needed), width - 8)}")
+        print_lines(panel("answer card · 更优回答", body, width, color=ACCENT))
 
 
 def _render_settlement(s: dict, width: int) -> None:
@@ -574,6 +641,8 @@ def _render_settlement(s: dict, width: int) -> None:
         tops = "、".join(c["topic"] for c in diag["clusters"][:3])
         body.append(f"{fg(ACCENT)}post-mock 诊断{RESET}：{tops}  "
                     f"{fg(MUTED)}(${s.get('diagnosis_cost_usd',0):.4f}){RESET}")
+    if s.get("diagnosis_image_path"):
+        body.append(f"{fg(TITLE)}🖼️ 诊断信息图{RESET}：{s['diagnosis_image_path']}")
     print_lines(panel("settlement · Q5 自动诊断", body, width, color=BORDER))
 
 
@@ -589,14 +658,14 @@ def handle_request(mgr, text: str, width: int) -> None:
     """复刻 Manager.handle，但保留 responses 以可视化各 worker（Design §2b）。"""
     trace_id = f"cli-{uuid.uuid4().hex[:6]}"
     # 记忆面板入口：本轮读取稳定 + 会话记忆（清空并开始记录本轮记忆操作）。
-    convo = mgr.begin_memory_turn(text, _SESSION_ID)
-    plan = mgr.make_plan(text, conversation_summary=convo)
-    plan, responses, meta, replan = mgr.execute_with_replan(plan, text, trace_id=trace_id)
+    mgr.begin_memory_turn(text, _SESSION_ID)
+    # Manager ReAct 编排：每步看子 agent 结果决策，直到 finish/预算（不预拆 DAG、无 replan）。
+    responses, meta, plan = mgr.execute_dynamic(text, trace_id=trace_id)
     agg = mgr.aggregate(responses, plan, meta)
     agg["trace_id"] = trace_id
     # 短期记忆：收尾追加本轮原文（超出则压缩），供下一轮载入。
     mgr.record_turn(_SESSION_ID, text, agg.get("reply_text") or "")
-    render_exchange(plan, responses, agg, replan, width)
+    render_exchange(plan, responses, agg, 0, width)
     render_memory_panel(width)
 
 
