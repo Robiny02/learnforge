@@ -11,6 +11,7 @@ mock/intent 五分类）收敛成一个三层兜底的 resolver，并为四个�
 
 from __future__ import annotations
 
+from .dispatch import Dispatcher, Route
 from .resolver import IntentResolver
 
-__all__ = ["IntentResolver"]
+__all__ = ["IntentResolver", "Dispatcher", "Route"]

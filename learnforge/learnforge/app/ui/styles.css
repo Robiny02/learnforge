@@ -1219,3 +1219,23 @@ meter {
     grid-template-columns: 1fr;
   }
 }
+
+/* 多模态附件：回形针按钮 + chip 槽 */
+.attach-slot { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 4px 0; }
+.attach-slot[hidden] { display: none; }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 14px; font-size: 12px;
+  background: rgba(127,127,127,0.14); border: 1px solid rgba(127,127,127,0.25);
+}
+.attach-chip .attach-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip .attach-x {
+  border: none; background: transparent; cursor: pointer; font-size: 12px;
+  line-height: 1; padding: 0 2px; opacity: 0.6;
+}
+.attach-chip .attach-x:hover { opacity: 1; }
+.attach-btn {
+  border: none; background: transparent; cursor: pointer; font-size: 18px;
+  padding: 0 8px; opacity: 0.7;
+}
+.attach-btn:hover { opacity: 1; }

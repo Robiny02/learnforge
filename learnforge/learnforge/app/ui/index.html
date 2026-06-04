@@ -86,7 +86,10 @@
               </article>
             </div>
 
+            <div class="attach-slot" id="attachSlot" hidden></div>
             <form class="composer" id="composer">
+              <button type="button" id="attachBtn" class="attach-btn" title="添加附件（图片/PDF/MD/文本）">📎</button>
+              <input type="file" id="fileInput" multiple accept="image/*,.pdf,.md,.markdown,.txt" hidden />
               <input id="promptInput" autocomplete="off" placeholder="问一个问题，或描述你的学习目标..." />
               <button type="submit">Send</button>
             </form>

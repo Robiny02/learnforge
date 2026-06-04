@@ -23,18 +23,18 @@ import urllib.error
 import urllib.request
 from typing import Dict, List, Optional
 
-from ..contracts.agents.retrieval import Chunk, RetrievalFilters, RetrievalInput, RetrievalOutput
-from ..contracts.enums import AgentId, KnowledgeScope, ModelTier, RetrievalMethod, RetrievalMode
-from ..knowledge.retrieval_aliases import expand_aliases
-from ..knowledge.rerank import DEFAULT_RERANKER, LLMReranker, Reranker
-from ..knowledge.sources import (
+from ...contracts.agents.retrieval import Chunk, RetrievalFilters, RetrievalInput, RetrievalOutput
+from ...contracts.enums import AgentId, KnowledgeScope, ModelTier, RetrievalMethod, RetrievalMode
+from ...knowledge.retrieval_aliases import expand_aliases
+from ...knowledge.rerank import DEFAULT_RERANKER, LLMReranker, Reranker
+from ...knowledge.sources import (
     KnowledgeSource,
     build_default_sources,
     rrf_fuse,
 )
-from ..llm.client import LLM, LLMUnavailable
-from ..llm.embeddings import embed_query
-from .base import BaseAgent
+from ...llm.client import LLM, LLMUnavailable
+from ...llm.embeddings import embed_query
+from ..base import BaseAgent
 
 __all__ = ["RetrievalAgent", "rrf_fuse"]
 
@@ -305,7 +305,7 @@ class RetrievalAgent(BaseAgent):
         """LOCAL 检索 = 搜索长期(个人)记忆 → 记忆日志面板（REQUIREMENTS §3.1/§3.2）。"""
         if KnowledgeScope.LOCAL not in scopes:
             return
-        from ..memory.log import INJECT, READ, MEMORY_LOG
+        from ...memory.log import INJECT, READ, MEMORY_LOG
 
         MEMORY_LOG.record(READ, "搜索长期记忆", f"命中 {hits} 条")
         MEMORY_LOG.record(INJECT, "注入长期记忆", f"采用 {used} 条", count=used)

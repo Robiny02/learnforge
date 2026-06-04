@@ -227,3 +227,30 @@ CREATE TABLE IF NOT EXISTS agent_traces (
 
 CREATE INDEX IF NOT EXISTS idx_traces_trace_id
     ON agent_traces (trace_id);
+
+-- ===========================================================================
+-- 10) 会话对话账本（替代进程内 _UI_CTX：持久、可查、可 replay）
+--     一行 = 一个对话轮 + 它的路由结果与产物。供意图分类(取投影)与主 agent(取全文)加载。
+--     参考 Reactor 的 DialogueRun/ToolInvocation/ToolOutput：role/content/tool_calls/status。
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS dialogue_turns (
+    turn_id     TEXT PRIMARY KEY,                 -- str(uuid4)
+    session_id  TEXT NOT NULL,
+    seq         INTEGER NOT NULL,                 -- 会话内自增,定序/取最近 N 轮
+    role        TEXT NOT NULL,                    -- user | assistant | system
+    text        TEXT NOT NULL DEFAULT '',         -- 用户原话 / 助手回应摘要
+
+    capability  TEXT,                             -- qa|planning|diagnosis|mock|note|composite
+    route_mode  TEXT,                             -- single | multi
+    topic       TEXT,                             -- 抽到的主题（意图分类的关键信号）
+
+    tool_calls  TEXT NOT NULL DEFAULT '[]',       -- JSON array [{agent,task,status}]（≈ ToolInvocation）
+    artifacts   TEXT NOT NULL DEFAULT '[]',       -- JSON array [{kind,ref}]（path_id/mock_sid… ≈ ToolArtifactRegistry）
+
+    status      TEXT NOT NULL DEFAULT 'completed',-- completed|failed|needs_input
+    trace_id    TEXT,                             -- 关联 agent_traces，便于下钻
+    created_at  TEXT NOT NULL                     -- ISO8601 UTC
+);
+
+CREATE INDEX IF NOT EXISTS idx_dialogue_session_seq
+    ON dialogue_turns (session_id, seq);

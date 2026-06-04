@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -28,13 +28,17 @@ from ..contracts.agents.mock import MockInput
 from ..contracts.enums import Status
 from ..contracts.intent import Capability, IntentFrame
 from ..graph.main_graph import compile_main_graph
-from ..intent import IntentResolver
+from ..intent import Dispatcher, IntentResolver
 from ..agents.mock.actions import Step, run_plan
+from ..intent import slots as S
+from ..multimodal import ingest_attachments, parse_attachments
+from ..contracts.attachment import flatten_attachments
 from ..intent.slots import has_mock_signal as _has_mock_signal
 
 _app_graph = None
 _manager: Optional[ManagerAgent] = None
 _intent_resolver: Optional[IntentResolver] = None
+_intent_dispatcher: Optional[Dispatcher] = None
 
 
 def _graph():
@@ -59,49 +63,68 @@ def _resolver() -> IntentResolver:
     return _intent_resolver
 
 
-# 每会话对话上下文（进程内）：供意图层多轮承接/切换借用上文。重启即清空，符合会话语义。
-_UI_CTX: Dict[str, dict] = {}
+def _dispatcher() -> Dispatcher:
+    """轻量意图分发器（单/多意图 → Route）。槽位/澄清下沉到节点，仅在选中能力时懒触发。"""
+    global _intent_dispatcher
+    if _intent_dispatcher is None:
+        _intent_dispatcher = Dispatcher()
+    return _intent_dispatcher
+
+
+# 会话对话账本现以 SQLite `dialogue_turns` 为真值（替代旧的进程内 _UI_CTX dict）：
+# 持久、可查、可 replay。承接上下文（last_capability + aside 衰减 + active_mock + last_topic）
+# 由 DialogueTurnRepository.derive_context 从最近若干轮**实时派生**——单一真值，重启不丢。
+# 单用户本地单进程，SQLite 已够；多实例/高并发再考虑加 Redis。
+def _dialogue_repo():
+    from ..storage.repositories import DialogueTurnRepository
+    return DialogueTurnRepository(db_path=_mgr()._db_path)
 
 
 def _ctx_load(session_id: str) -> dict:
-    return _UI_CTX.get(session_id, {})
-
-
-# 主线意图能力（开了一条"线程"）；qa/note 是自包含旁支（aside），不接管主线。
-_THREAD_CAPS = {"planning", "diagnosis", "mock"}
-# 连续多少个 aside 后认为主线已放弃（避免 last_capability 长期粘住而误带后续承接句）。
-_THREAD_DECAY = 3
+    """从 dialogue_turns 派生承接上下文（供意图分发/承接借用上文）。失败 → 空（链路永远通）。"""
+    try:
+        return _dialogue_repo().derive_context(session_id)
+    except Exception:
+        return {}
 
 
 def _ctx_record(session_id: str, text: str, body: dict) -> None:
-    """回写每会话上下文，**让主线意图粘住、旁支插入不污染**（用户跳脱时仍稳）。
+    """把本轮路由结果落一行 dialogue_turns（capability/topic/tool_calls/artifacts）。
 
-    - 实质任务轮(planning/diagnosis/mock) → 更新主线 last_capability，清零 aside 计数；
-    - 八股问答 / 生成笔记等旁支 → 不动主线，aside 计数 +1；连续 ≥3 次才让主线失效。
+    主线粘住/aside 衰减不再在此维护——改由 derive_context 读时计算（见仓储）。best-effort。
     """
+    from ..contracts.dialogue import DialogueTurn, ToolCall
     from ..intent.slots import extract_known_topic
 
     if not isinstance(body, dict):
         return
-    cap = None
-    plan = body.get("plan")
-    if isinstance(plan, list) and plan and isinstance(plan[-1], dict):
-        cap = plan[-1].get("agent")
-    cur = _UI_CTX.setdefault(session_id, {"history": []})
-    if cap in _THREAD_CAPS:                 # 实质任务 → 接管/刷新主线
-        cur["last_capability"] = cap
-        cur["aside_streak"] = 0
-    elif cap:                                # qa/note 旁支 → 主线粘住，计 aside
-        cur["aside_streak"] = cur.get("aside_streak", 0) + 1
-        if cur["aside_streak"] >= _THREAD_DECAY:
-            cur.pop("last_capability", None)  # 久未延续 → 主线失效
-    cur["active_mock"] = bool(body.get("mock_active"))
-    topic = extract_known_topic(text or "")
-    if topic:
-        cur["last_topic"] = topic
-    hist = cur.setdefault("history", [])
-    hist.append({"text": (text or "")[:80], "capability": cap})
-    del hist[:-4]  # 对话窗口：只留最近 4 轮
+    plan = body.get("plan") if isinstance(body.get("plan"), list) else []
+    plan = [p for p in plan if isinstance(p, dict)]
+    cap = plan[-1].get("agent") if plan else None
+    tool_calls = [ToolCall(agent=str(p.get("agent"))) for p in plan if p.get("agent")]
+    route_mode = "multi" if len(plan) > 1 else "single"
+    artifacts: List[Dict[str, str]] = []
+    if body.get("mock_active") and body.get("mock_session_id"):
+        artifacts.append({"kind": "mock_active", "ref": str(body["mock_session_id"])})
+    # 上传文件作为 artifact 记录（document 引用，后续可经 document_id 回查 KB）。
+    for d in (body.get("documents") or []):
+        if isinstance(d, dict) and d.get("document_id"):
+            artifacts.append({
+                "kind": "image" if d.get("kind") == "image" else "document",
+                "ref": str(d["document_id"]),
+                "filename": str(d.get("filename") or ""),
+            })
+    try:
+        repo = _dialogue_repo()
+        seq = repo.next_seq(session_id)
+        repo.add_turn(DialogueTurn(
+            turn_id=f"dt-{uuid.uuid4().hex[:10]}", session_id=session_id, seq=seq,
+            role="user", text=(text or "")[:500], capability=cap, route_mode=route_mode,
+            topic=extract_known_topic(text or ""), tool_calls=tool_calls, artifacts=artifacts,
+            status=str(body.get("status") or "completed"), trace_id=body.get("trace_id"),
+        ))
+    except Exception:
+        pass
 
 
 class QARequest(BaseModel):
@@ -136,6 +159,8 @@ class UIChatRequest(BaseModel):
     mock_question: Optional[str] = None  # 当前待答的面试题（供 auto 分类给 LLM 上下文）
     # 澄清续接：上一轮 needs_input 回传的部分意图帧，本轮文本是对缺失槽位的回答。
     pending_intent: Optional[dict] = None
+    # 多模态附件(本地上传，内联)：[{"filename","mime","data"(base64/dataURL)}]。
+    attachments: Optional[List[dict]] = None
 
 
 class UIFileRequest(BaseModel):
@@ -207,6 +232,42 @@ def _ui_fast_qa(text: str, session_id: str) -> dict:
     }
     # Keep short-session continuity, but skip daily QA indexing for fast concept cards.
     mgr.record_turn(session_id, text, out.answer)
+    return body
+
+
+def _qa_with_attachments(text: str, atts, session_id: str) -> dict:
+    """带附件的问答（像 ChatGPT：看图/读文档作答）。附件文本进证据、图片走 vision。
+
+    走 QA 完整链(检索+合成+核验)；图片/扫描件需 vision 模型(无 key → 降级为文本/占位回答)。
+    """
+    mgr = _mgr()
+    # 1) 持久化进本地知识库：清洗 → 切片 → 入库（去重）；图片生成可检索 summary。
+    #    真实内容落 chunks(local)，会话只留 document 引用（manifest），后续靠 retrieval 召回。
+    manifest = ingest_attachments(atts, session_id=session_id, db_path=mgr._db_path)
+    # 2) 当前轮仍按 ChatGPT 方式作答：文本进证据、图片走 vision（不破坏现有多模态 QA）。
+    flat = flatten_attachments(atts)
+    q = text or "请阅读/查看我上传的附件，并解答或说明其要点。"
+    out = mgr.qa.run(QAInput(question=q, attachment_text=flat.text, image_data_urls=flat.images))
+    note = ""
+    degraded = [a for a in atts if a.degraded]
+    if degraded:
+        note = "（注：" + "；".join(f"{a.filename or a.kind} {a.note}" for a in degraded) + "）"
+    body = {
+        "reply_text": (out.answer or "") + note,
+        "citations": [c.model_dump() for c in out.citations],
+        "next_actions": [],
+        "status": Status.OK.value,
+        "image_url": "",
+        "image_spec": None,
+        "plan": [{"agent": "qa", "attachments": len(atts),
+                  "documents": len(manifest.documents)}],
+        "replan_count": 0,
+        "trace_id": f"t-{session_id}",
+        # document 引用 + 轻量 manifest（不含全文）：供前端展示与下一轮按 document_id 回查。
+        "documents": [d.model_dump() for d in manifest.documents],
+        "manifest": manifest.manifest_line(),
+    }
+    mgr.record_turn(session_id, q, out.answer)
     return body
 
 
@@ -495,6 +556,11 @@ if FastAPI is not None:
             out = run_plan(mgr.mock, sid, [Step(action, text)])
             return _mock_response(mgr, out, sid)
 
+        # 1.5) 带附件(图片/PDF/MD)→ 像 ChatGPT 一样看附件作答（v1 走 QA：文本进证据、图片走 vision）。
+        atts = parse_attachments(req.attachments)
+        if atts:
+            return _qa_with_attachments(text, atts, req.session_id)
+
         # 2) 澄清续接：上一轮 needs_input 后，本轮文本补全缺失槽位。
         if req.pending_intent:
             mgr = _mgr()
@@ -506,34 +572,43 @@ if FastAPI is not None:
             return _ui_route("plan" if frame.capability == Capability.PLANNING else "qa",
                              text, req.session_id)
 
-        # 3) 自由对话(mode=qa)或显式 mock：交统一意图层判断是否针对性开面试 / 是否要澄清。
+        # 3) 自由对话(mode=qa)或显式 mock：轻量分发器判单/多意图 → 路由。槽位/澄清下沉到节点。
         #    其余显式模式(plan/diagnose/note)直接走常规链路，不被意图层接管。
         if mode in ("qa", "mock"):
             mgr = _mgr()
-            frame = (_resolver().mock_frame(text) if mode == "mock"
-                     else _resolver().resolve(text, ctx))  # ctx：多轮承接/切换借用上文
-            # 生成 md/笔记/文档（用户随手插入的生成请求）→ 走笔记呈现链路。
-            if "note_gen" in frame.signals:
-                return _ui_route("note", text, req.session_id)
-            # 仅在有真实开场信号时才开面试：避免"什么是面试技巧"这类裸含"面试"的问答被误开。
-            # active_mock 续接（"再来一题"等无关键词承接）也算真实开场信号。
-            want_mock = (mode == "mock" or _wants_start_mock(text) or _has_mock_signal(text)
-                         or "context_carry" in frame.signals or "llm_intent" in frame.signals)
-            if frame.capability == Capability.MOCK and want_mock:
+
+            # 前端强制 mock 模式：直接开面试（绕过能力判定，仍懒抽槽位 + 缺料澄清）。
+            if mode == "mock":
+                frame = _resolver().mock_frame(text)
                 if frame.clarification:
                     return _needs_input_response(frame)
                 return _start_mock_from_frame(mgr, frame, f"ui-mock-{uuid.uuid4().hex[:8]}")
-            # 规划缺目标/期限 → 主动澄清一轮（其余仍交常规链路）。
-            if frame.capability == Capability.PLANNING and frame.clarification:
-                return _needs_input_response(frame)
-            # 意义不明的含糊求助（兜底 qa + 反问）→ 主动澄清一轮。
-            if frame.capability == Capability.QA and frame.clarification:
-                return _needs_input_response(frame)
-            # LLM 主判 / 多轮承接到的 planning/diagnosis → 显式按该能力走（否则被 _ui_route 默认 mode 覆盖）。
-            if {"context_carry", "llm_intent"} & set(frame.signals):
-                if frame.capability == Capability.PLANNING:
-                    return _ui_route("plan", text, req.session_id)
-                if frame.capability == Capability.DIAGNOSIS:
-                    return _ui_route("diagnose", text, req.session_id)
+
+            route = _dispatcher().route(text, ctx)  # ctx：多轮承接借上文（来自 dialogue_turns）
+
+            # 多意图 → 主图，由 Manager 内 plan-as-tool 编排（诊断→改计划等）。
+            if route.mode == "multi":
+                return _invoke(text, req.session_id)
+
+            cap = route.capability or "qa"
+            # mock：仅在有真实开场信号时才开（"什么是模拟面试"这类自包含问句不误开）。
+            if cap == "mock":
+                if S.is_self_contained(text) and not (_wants_start_mock(text) or _has_mock_signal(text)):
+                    return _ui_route("qa", text, req.session_id)
+                frame = _resolver().mock_frame(text)        # 节点级懒抽槽位 + 缺料澄清
+                if frame.clarification:
+                    return _needs_input_response(frame)
+                return _start_mock_from_frame(mgr, frame, f"ui-mock-{uuid.uuid4().hex[:8]}")
+            if cap == "note":
+                return _ui_route("note", text, req.session_id)
+            if cap == "planning":
+                pf = _resolver().resolve(f"/plan {text}")   # 节点级懒澄清：缺目标/期限 → 反问
+                if pf.clarification:
+                    return _needs_input_response(pf)
+                return _ui_route("plan", text, req.session_id)
+            if cap == "diagnosis":
+                return _ui_route("diagnose", text, req.session_id)
+            # qa：fast lane 或主图。
+            return _ui_route("qa", text, req.session_id)
 
         return _ui_route(mode, text, req.session_id)

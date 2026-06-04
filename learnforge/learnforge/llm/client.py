@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Type, TypeVar
+from typing import List, Optional, Tuple, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -127,14 +127,23 @@ class LLMClient:
         timeout_s: Optional[float] = None,
         response_format: Optional[dict] = None,
         model: Optional[str] = None,
+        images: Optional[List[str]] = None,
     ) -> LLMResult:
+        """`images`：图片 data URL 列表(vision)。非空 → user content 组装成 OpenAI 多模态数组
+        (text + image_url)，交 vision 模型(如 gpt-4o/4o-mini)"看"图。需模型本身支持视觉。"""
         if not self.available or self._httpx is None:
             raise LLMUnavailable("OPENROUTER_API_KEY 未设置或 httpx 不可用。")
 
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        if images:
+            user_content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": u}} for u in images if u
+            ]
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         payload = {
             "model": model or _MODEL_NAME[model_tier],  # 显式 model 覆盖档位默认（如意图层用 gpt-5）
@@ -185,6 +194,9 @@ class LLMClient:
         system: Optional[str] = None,
         max_tokens: int = 1024,
         timeout_s: Optional[float] = None,
+        model: Optional[str] = None,
+        tool_choice: Optional[object] = None,
+        temperature: Optional[float] = None,
     ) -> Tuple[dict, "LLMResult"]:
         """真正的 tool-calling 单回合（OpenAI 兼容）：返回 assistant 这一回合的 message + 用量。
 
@@ -199,13 +211,15 @@ class LLMClient:
 
         msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
         payload = {
-            "model": _MODEL_NAME[model_tier],
+            "model": model or _MODEL_NAME[model_tier],  # 显式 model 覆盖档位默认（如意图层用 gpt-4o）
             "messages": msgs,
             "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice or "auto"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -248,10 +262,12 @@ class LLMClient:
         timeout_s: Optional[float] = None,
         retries: int = 1,
         model: Optional[str] = None,
+        images: Optional[List[str]] = None,
     ) -> Tuple[T, LLMResult]:
         """调用 LLM 并把 JSON 输出解析为 `schema`。失败重试 1 次（Design §8a）。
 
         `model`：可选模型 id 覆盖（如意图层用 gpt-5），缺省按 `model_tier` 取默认。
+        `images`：图片 data URL(vision)，透传给 complete 组装多模态消息。
         """
         # 给模型完整 JSON Schema（含嵌套 $defs），否则像 PlanningOutput 这种嵌套结构
         # 便宜模型产不出合法 JSON → 解析失败 → 调用方掉 stub。
@@ -274,6 +290,7 @@ class LLMClient:
                 timeout_s=timeout_s,
                 response_format={"type": "json_object"},
                 model=model,
+                images=images,
             )
             try:
                 obj = schema.model_validate_json(_extract_json(result.text))

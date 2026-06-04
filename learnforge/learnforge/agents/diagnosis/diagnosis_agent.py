@@ -16,18 +16,18 @@ import math
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from ..contracts.agents.diagnosis import (
+from ...contracts.agents.diagnosis import (
     Cluster,
     DiagnosisInput,
     DiagnosisResult,
     WeakAtom,
 )
-from ..contracts.enums import AgentId, EventType
-from ..llm.client import LLM
-from ..mcp import tools as _toolmod
-from ..skills.registry import SKILL_REGISTRY
-from .base import BaseAgent
-from .react.loop import ReactRunner
+from ...contracts.enums import AgentId, EventType
+from ...llm.client import LLM
+from ...mcp import tools as _toolmod
+from ...skills.registry import SKILL_REGISTRY
+from ..base import BaseAgent
+from ..react.loop import ReactRunner
 
 # 弱点判定阈值与衰减常数
 _RECENCY_LAMBDA = 0.05   # recency_weight = exp(-λ * age_days)
@@ -132,9 +132,14 @@ class DiagnosisAgent(BaseAgent):
         win = payload.time_window.value
         focus = "、".join(payload.focus_topics) if payload.focus_topics else "（全部）"
         system = (self.skill.spec.system_prompt if self.skill else "") or _DIAG_REACT_SYSTEM
+        user_prompt = f"诊断学习薄弱点。时间窗={win}，关注主题={focus}。先取证据再给复习建议。"
+        # 按需检索（只读）：读 mock 记录/上传材料里的目标要求，辅助判断弱点取向。不写任何 state。
+        materials = self._recall_materials(payload)
+        if materials:
+            user_prompt += f"\n\n【参考材料(只读，勿据此编造掌握度)】\n{materials}"
         res = ReactRunner(max_steps=4).run(
             self,
-            user_prompt=f"诊断学习薄弱点。时间窗={win}，关注主题={focus}。先取证据再给复习建议。",
+            user_prompt=user_prompt,
             tool_names=tools, system=system, handlers=handlers,
         )
         if res.degraded and not res.text:
@@ -156,6 +161,16 @@ class DiagnosisAgent(BaseAgent):
         self.last_react_trace = res.trace
         return DiagnosisResult(weak_atoms=weak_atoms, clusters=clusters,
                                recommendations=recs, confidence=self._estimate_confidence(events, clusters))
+
+    def _recall_materials(self, payload: DiagnosisInput) -> str:
+        """只读地检索上传材料/历史记录（local），辅助诊断。无 query/命中 → 空串（非强制）。"""
+        from ...contracts.enums import KnowledgeScope
+
+        q = "、".join(payload.focus_topics).strip() or "薄弱点 复习 要求"
+        try:
+            return self.recall(q, scopes=[KnowledgeScope.LOCAL], top_k=3).text
+        except Exception:  # noqa: BLE001 - 检索失败不影响只读诊断
+            return ""
 
     @staticmethod
     def _parse_recs(text: str) -> List[str]:

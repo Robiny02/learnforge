@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:  # 仅类型注解用，避免运行期循环导入（实体在方法内延迟导入）。
+    from ..contracts.dialogue import DialogueTurn
 
 from ..contracts.agents.retrieval import Chunk, RetrievalFilters
 from ..contracts.atom import KnowledgeAtom
@@ -58,6 +61,14 @@ def _chunk_filter_sql(filters: Optional[RetrievalFilters]) -> Tuple[List[str], l
         # daily memory 的类型存于 metadata.kind（REQUIREMENTS R4.5 按类型召回）。
         clauses.append("json_extract(c.metadata, '$.kind') = ?")
         params.append(filters.kind)
+    if filters.origin:
+        # 上传附件/图片切片的来源标记（metadata.origin = attachment）。
+        clauses.append("json_extract(c.metadata, '$.origin') = ?")
+        params.append(filters.origin)
+    if filters.document_id:
+        # 定位单个已入库文档/图片的全部切片（「刚才那张图」按 artifact document_id 回查）。
+        clauses.append("json_extract(c.metadata, '$.document_id') = ?")
+        params.append(filters.document_id)
     return clauses, params
 
 
@@ -264,6 +275,37 @@ class ChunkRepository(_Base):
         except sqlite3.OperationalError:
             return []
         return [_row_to_chunk(r) for r in rows]
+
+    def find_document_by_hash(self, content_hash: str) -> Optional[str]:
+        """命中去重：返回已入库且 content_hash 相同的 document_id（无则 None）。
+
+        重复上传同一文件时避免重复切片入库（按内容哈希判等，而非文件名）。
+        """
+        if not content_hash:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT json_extract(metadata, '$.document_id') AS did FROM chunks "
+                "WHERE json_extract(metadata, '$.content_hash') = ? LIMIT 1",
+                (content_hash,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return row["did"] if row and row["did"] else None
+
+    def count_by_document(self, document_id: str) -> int:
+        """某 document_id 名下的切片数（供 manifest 回报 chunk_count）。"""
+        if not document_id:
+            return 0
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks "
+                "WHERE json_extract(metadata, '$.document_id') = ?",
+                (document_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        return int(row["n"]) if row else 0
 
     def upsert(
         self,
@@ -666,6 +708,250 @@ class TraceRepository(_Base):
         except sqlite3.OperationalError:
             return []
         return [dict(r) for r in rows]
+
+
+# 主线意图能力（开了一条"线程"）；qa/note 是自包含旁支（aside），不接管主线。
+_THREAD_CAPS = ("planning", "diagnosis", "mock")
+# 连续多少个 aside 后认为主线已放弃（避免 last_capability 长期粘住误带后续承接句）。
+_THREAD_DECAY = 3
+
+
+# dialogue_turns 自愈 DDL：旧库（init_db 早于本表加入）首次访问时即建表，透明迁移。
+_DIALOGUE_DDL = """
+CREATE TABLE IF NOT EXISTS dialogue_turns (
+    turn_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    role TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+    capability TEXT, route_mode TEXT, topic TEXT,
+    tool_calls TEXT NOT NULL DEFAULT '[]', artifacts TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'completed', trace_id TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dialogue_session_seq ON dialogue_turns (session_id, seq);
+"""
+
+
+class DialogueTurnRepository(_Base):
+    """会话对话账本：每轮一行（dialogue_turns）。替代进程内 _UI_CTX 的薄 dict。
+
+    三类读：`recent`（主 agent 取完整轮含产物）、`recent_projection`（意图分类取紧凑投影）、
+    `derive_context`（派生主线状态/承接上下文，含 aside 衰减）。写经 `add_turn`（best-effort）。
+    """
+
+    def __init__(self, conn: Optional[sqlite3.Connection] = None, db_path: Optional[str] = None):
+        super().__init__(conn=conn, db_path=db_path)
+        try:  # 自愈建表（IF NOT EXISTS，幂等；旧库无此表时透明迁移）。
+            self.conn.executescript(_DIALOGUE_DDL)
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def next_seq(self, session_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS m FROM dialogue_turns WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row["m"]) + 1
+
+    def add_turn(self, turn: "DialogueTurn") -> None:
+        """落一行对话轮；best-effort，失败不抛（与 TraceRepository 一致）。"""
+        from ..contracts.dialogue import DialogueTurn  # noqa: F401 - 仅类型/校验
+
+        try:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO dialogue_turns
+                   (turn_id, session_id, seq, role, text, capability, route_mode, topic,
+                    tool_calls, artifacts, status, trace_id, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (turn.turn_id, turn.session_id, turn.seq, turn.role, turn.text,
+                 turn.capability, turn.route_mode, turn.topic,
+                 json.dumps([tc.model_dump() for tc in turn.tool_calls]),
+                 json.dumps(turn.artifacts),
+                 turn.status, turn.trace_id, turn.created_at or _now_iso()),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def recent(self, session_id: str, limit: int = 8) -> List["DialogueTurn"]:
+        """取最近 N 轮完整记录（升序，含 tool_calls/artifacts）——主 agent 加载用。"""
+        from ..contracts.dialogue import DialogueTurn, ToolCall
+
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM dialogue_turns WHERE session_id = ? "
+                "ORDER BY seq DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        turns: List[DialogueTurn] = []
+        for r in reversed(rows):
+            turns.append(DialogueTurn(
+                turn_id=r["turn_id"], session_id=r["session_id"], seq=r["seq"],
+                role=r["role"], text=r["text"], capability=r["capability"],
+                route_mode=r["route_mode"], topic=r["topic"],
+                tool_calls=[ToolCall(**tc) for tc in json.loads(r["tool_calls"] or "[]")],
+                artifacts=json.loads(r["artifacts"] or "[]"),
+                status=r["status"], trace_id=r["trace_id"], created_at=r["created_at"],
+            ))
+        return turns
+
+    def recent_projection(self, session_id: str, limit: int = 4) -> List[dict]:
+        """意图分类的紧凑窗口：每轮只取 {text(截断), capability, topic, tools(agent 名)}。
+
+        刻意不取全文/产物——分类器只需要"上文做了什么"的轻量信号，便宜且可回归。
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT text, capability, topic, tool_calls FROM dialogue_turns "
+                "WHERE session_id = ? AND role = 'user' ORDER BY seq DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        out: List[dict] = []
+        for r in reversed(rows):
+            tools = [tc.get("agent") for tc in json.loads(r["tool_calls"] or "[]")]
+            out.append({"text": (r["text"] or "")[:80], "capability": r["capability"],
+                        "topic": r["topic"], "tools": tools})
+        return out
+
+    def derive_context(self, session_id: str, recent_k: int = 4, scan: int = 20) -> dict:
+        """派生意图层上下文：最近 K 轮 + 关键节点(anchors) + 会话概要(summary) + 主线状态。
+
+        替代旧的"纯最近 N 轮"窗口（会丢掉早于窗口的关键转折）：
+        - **anchors(①)**：扫描更长窗口，钉住显著轮——当前主线开始的那一轮(转折)、带 live 产物
+          的轮、待澄清轮——不论多旧；主线被 aside 衰减后这些锚点自然不再入选(过期)。
+        - **summary(④)**：优先取已有 session_state 摘要(LLM 折叠)，无则从更旧轮**确定性** digest
+          (主题/能力)，始终有值，且不在意图热路径加 LLM 调用。
+        承接/aside 衰减仍按最近轮算(与旧行为一致)。
+        """
+        rows = self._scan_rows(session_id, scan)
+        if not rows:
+            return {"history": [], "anchors": [], "active_mock": self._active_mock(session_id)}
+        proj = [self._project_row(r) for r in rows]   # 紧凑投影(chrono)
+        last_capability: Optional[str] = None
+        aside_streak = 0
+        for h in reversed(proj):                        # 主线 + aside 衰减(按最近轮)
+            cap = h.get("capability")
+            if cap in _THREAD_CAPS:
+                if aside_streak < _THREAD_DECAY:
+                    last_capability = cap
+                break
+            if cap:
+                aside_streak += 1
+        last_topic = next((h["topic"] for h in reversed(proj) if h.get("topic")), None)
+
+        recent = proj[-recent_k:]
+        older = rows[:-recent_k] if len(rows) > recent_k else []
+        anchors = self._select_anchors(older, last_capability)
+        summary = self._session_summary(session_id) or _digest_rows(older)
+
+        ctx: dict = {"history": recent, "anchors": anchors,
+                     "active_mock": self._active_mock(session_id)}
+        if summary:
+            ctx["summary"] = summary
+        if last_capability:
+            ctx["last_capability"] = last_capability
+        if last_topic:
+            ctx["last_topic"] = last_topic
+        return ctx
+
+    def _scan_rows(self, session_id: str, limit: int) -> List[sqlite3.Row]:
+        """取最近 `limit` 个 user 轮的富字段(chrono)，供 anchors/summary 计算。"""
+        try:
+            rows = self.conn.execute(
+                "SELECT seq, text, capability, topic, tool_calls, artifacts, status "
+                "FROM dialogue_turns WHERE session_id = ? AND role = 'user' "
+                "ORDER BY seq DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return list(reversed(rows))
+
+    @staticmethod
+    def _project_row(r: sqlite3.Row) -> dict:
+        tools = [tc.get("agent") for tc in json.loads(r["tool_calls"] or "[]")]
+        return {"text": (r["text"] or "")[:80], "capability": r["capability"],
+                "topic": r["topic"], "tools": tools}
+
+    def _select_anchors(self, older_rows: List[sqlite3.Row],
+                        last_capability: Optional[str]) -> List[dict]:
+        """从更旧的轮里钉住显著节点：主线转折 / live 产物 / 待澄清。chrono、去重、≤3。"""
+        anchors: List[dict] = []
+        seen = set()
+
+        def add(r: sqlite3.Row, kind: str) -> None:
+            anchors.append({**self._project_row(r), "kind": kind, "seq": r["seq"]})
+            seen.add(r["seq"])
+
+        if last_capability:                    # 当前主线开始的那一轮(转折)
+            for r in older_rows:
+                if r["capability"] == last_capability:
+                    add(r, "thread_start")
+                    break
+        for r in reversed(older_rows):         # 最近一条带 live 产物(mock/path)
+            if r["seq"] in seen:
+                continue
+            arts = json.loads(r["artifacts"] or "[]")
+            if any(a.get("kind") in ("mock_active", "path") for a in arts):
+                add(r, "artifact")
+                break
+        for r in reversed(older_rows):         # 最近一条待澄清
+            if r["seq"] in seen:
+                continue
+            if r["status"] == "needs_input":
+                add(r, "clarify")
+                break
+        anchors.sort(key=lambda a: a["seq"])
+        return anchors[:3]
+
+    def _session_summary(self, session_id: str) -> str:
+        """已有会话摘要(session_state.summary，LLM 折叠)；无则空。best-effort。"""
+        try:
+            row = self.conn.execute(
+                "SELECT summary FROM session_state WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return ""
+        return row["summary"] if row and row["summary"] else ""
+
+    def _active_mock(self, session_id: str) -> bool:
+        """最近一轮是否仍处于进行中的 mock（artifacts 里带未结算的 mock 引用）。"""
+        try:
+            row = self.conn.execute(
+                "SELECT artifacts, status FROM dialogue_turns WHERE session_id = ? "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        if not row:
+            return False
+        for a in json.loads(row["artifacts"] or "[]"):
+            if a.get("kind") == "mock_active":
+                return True
+        return False
+
+
+def _digest_rows(rows: List[sqlite3.Row]) -> str:
+    """更旧轮的确定性摘要(无 LLM)：聊过的主题 + 做过的实质能力。作 session_state 摘要的兜底。"""
+    topics: List[str] = []
+    caps: List[str] = []
+    for r in rows:
+        t = r["topic"]
+        if t and t not in topics:
+            topics.append(t)
+        c = r["capability"]
+        if c in _THREAD_CAPS and c not in caps:
+            caps.append(c)
+    parts = []
+    if topics:
+        parts.append("聊过：" + "、".join(topics[:5]))
+    if caps:
+        parts.append("做过：" + "、".join(caps))
+    return "；".join(parts)
 
 
 # --- row mappers ---

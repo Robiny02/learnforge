@@ -10,12 +10,12 @@ import re
 import uuid
 from typing import Dict, List, Optional
 
-from ..contracts.agents.planning import PathDiff, PathItem, PlanningInput, PlanningOutput
-from ..contracts.atom import KnowledgeAtom
-from ..contracts.enums import AgentId, PlanMode, Status
-from ..integrations import notion as _notion
-from ..storage.repositories import AtomRepository
-from .base import BaseAgent
+from ...contracts.agents.planning import PathDiff, PathItem, PlanningInput, PlanningOutput
+from ...contracts.atom import KnowledgeAtom
+from ...contracts.enums import AgentId, PlanMode, Status
+from ...integrations import notion as _notion
+from ...storage.repositories import AtomRepository
+from ..base import BaseAgent
 
 
 class PlanningAgent(BaseAgent):
@@ -29,9 +29,9 @@ class PlanningAgent(BaseAgent):
         self.last_plan_image_path: Optional[str] = None
         self.last_plan_image_spec: Optional[Dict] = None
         _notion.register()  # 把 notion.sync 接入运行时工具表（幂等）
-        from ..integrations import report as _report
+        from ...integrations import report as _report
         _report.register()  # report.generate（本地 Markdown 报告）
-        from ..integrations import gpt_image as _gpt_image
+        from ...integrations import gpt_image as _gpt_image
         _gpt_image.register()  # gpt_image.generate（学习计划信息图 PNG）
 
     def run(self, payload: PlanningInput) -> PlanningOutput:
@@ -46,7 +46,9 @@ class PlanningAgent(BaseAgent):
 
         atoms = self._candidate_atoms(payload)
         prompt = self._build_prompt(payload, atoms)
-        out = self.llm_structured(prompt, PlanningOutput, max_tokens=2048)
+        # 按需检索：读上传的 JD/简历/学习材料/历史计划（local），经 retrieved 槽进 prompt。
+        materials = self._recall_materials(payload)
+        out = self.llm_structured(prompt, PlanningOutput, max_tokens=2048, retrieved=materials)
         if out is not None:
             # 关键：模型常编造不存在的 atom_id（如 '1','2'），落库会被外键过滤成空计划。
             # 这里把 add 约束到真实候选 atom_id，过滤后为空但有候选 → 确定性兜底，保证计划可落库。
@@ -83,7 +85,7 @@ class PlanningAgent(BaseAgent):
             "tips": ["每天完成后做一场模拟面试巩固", "薄弱点会自动进入下次诊断"],
         }
         try:
-            from ..integrations import gpt_image as _gpt_image
+            from ...integrations import gpt_image as _gpt_image
 
             if _gpt_image.auto_enabled():
                 res = _gpt_image.generate_plan_infographic(
@@ -106,7 +108,7 @@ class PlanningAgent(BaseAgent):
         # 1) 自主路径：ReactRunner 让模型决定调 notion.sync / report.generate（可都调）。
         if tools:
             try:
-                from .react.loop import ReactRunner
+                from ..react.loop import ReactRunner
 
                 res = ReactRunner(max_steps=3).run(
                     self,
@@ -145,7 +147,7 @@ class PlanningAgent(BaseAgent):
             if isinstance(out, dict) and not out.get("error"):
                 self.last_notion_url = out.get("url")
         if not self.last_notion_url and not self.last_report_path and self.has_tool("report.generate"):
-            from ..integrations.report import report_generate_handler
+            from ...integrations.report import report_generate_handler
             out = report_generate_handler({"title": "LearnForge 学习计划",
                                            "summary": "弱点优先的分天复习计划：每一天都要产出可验证的面试表达，而不只是看完材料。",
                                            "days": days,
@@ -205,6 +207,15 @@ class PlanningAgent(BaseAgent):
         for i, item in enumerate(diff.add):
             item.day_index = min(item.day_index, days - 1)
             item.order_idx = i
+
+    def _recall_materials(self, payload: PlanningInput) -> str:
+        """按需检索上传材料/历史计划（仅本地用户库）。无 query/无命中 → 空串（不强制检索）。"""
+        from ...contracts.enums import KnowledgeScope
+
+        q = " ".join(x for x in [payload.goal, payload.user_feedback] if x).strip()
+        if not q:
+            return ""
+        return self.recall(q, scopes=[KnowledgeScope.LOCAL], top_k=4).text
 
     def _candidate_atoms(self, payload: PlanningInput) -> List[KnowledgeAtom]:
         """读候选 Atom（Design §3.7：按 goal/诊断主题过滤）。DB 为空时返回 []。"""

@@ -31,6 +31,14 @@ class RetrievalFilters(BaseModel):
         default=None,
         description="按记忆类型过滤（daily memory 的 metadata.kind，如 qa/weak/mock/progress/decision）。",
     )
+    origin: Optional[str] = Field(
+        default=None,
+        description="按内容来源过滤（metadata.origin，如 attachment=用户上传的附件/图片）。",
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="定位单个已入库文档/图片的所有切片（metadata.document_id，供「刚才那张图」回查）。",
+    )
 
 
 class Chunk(BaseModel):

@@ -20,8 +20,10 @@ class InterviewerAgent(BaseAgent):
 
     def __init__(self, db_path: Optional[str] = None) -> None:
         super().__init__()
+        self._db_path = db_path  # 供统一 recall 接口惰性建检索器时透传库路径
         self.retrieval = RetrievalAgent(db_path=db_path)
         self._topic_cache: Dict[str, List] = {}
+        self._materials_cache: Dict[str, str] = {}
 
     def run(self, payload: InterviewerInput) -> InterviewerOutput:
         chunks = payload.retrieved
@@ -46,6 +48,14 @@ class InterviewerAgent(BaseAgent):
 
         asked = [t.question for t in payload.turn_history]
         evidence = "\n".join(f"- {c.text[:200]}" for c in chunks) or "（无检索证据）"
+        # 按需检索上传材料（简历/JD/项目文档，local + origin=attachment），出更贴近材料的追问。
+        # 同 topic 仅检索一次后缓存，后续追问复用（与共享题库检索一致，避免每轮重复触发）。
+        if payload.topic not in self._materials_cache:
+            self._materials_cache[payload.topic] = self.recall(
+                payload.topic, scopes=[KnowledgeScope.LOCAL], origin="attachment", top_k=3).text
+        materials = self._materials_cache[payload.topic]
+        if materials:
+            evidence = f"{evidence}\n{materials}"
         prompt = (
             f"主题：{payload.topic}\n难度(1-5)：{payload.difficulty}\n"
             f"已问过（勿重复）：{asked or '无'}\n参考资料：\n{evidence}\n"

@@ -2,6 +2,56 @@ const conversation = document.querySelector("#conversation");
 const composer = document.querySelector("#composer");
 const promptInput = document.querySelector("#promptInput");
 const modeSelect = document.querySelector("#modeSelect");
+const attachBtn = document.querySelector("#attachBtn");
+const fileInput = document.querySelector("#fileInput");
+const attachSlot = document.querySelector("#attachSlot");
+
+// 待发送的本地附件（像 ChatGPT：📎 选文件 → 进 chip 槽 → 随消息发送）。
+let pendingAttachments = [];  // [{filename, mime, data(dataURL)}]
+
+function renderAttachChips() {
+  if (!attachSlot) return;
+  attachSlot.innerHTML = "";
+  attachSlot.hidden = pendingAttachments.length === 0;
+  pendingAttachments.forEach((a, i) => {
+    const chip = document.createElement("span");
+    chip.className = "attach-chip";
+    const icon = a.mime.startsWith("image/") ? "🖼️" : a.mime.includes("pdf") ? "📄" : "📝";
+    chip.innerHTML = `${icon} <span class="attach-name">${a.filename}</span> <button type="button" class="attach-x" aria-label="移除">✕</button>`;
+    chip.querySelector(".attach-x").addEventListener("click", () => {
+      pendingAttachments.splice(i, 1);
+      renderAttachChips();
+    });
+    attachSlot.appendChild(chip);
+  });
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+if (attachBtn && fileInput) {
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    for (const file of Array.from(fileInput.files || [])) {
+      if (file.size > 15 * 1024 * 1024) {  // 15MB 上限，避免内联 base64 过大
+        addMessage("agent", `附件 ${file.name} 过大（>15MB），已跳过。`, "LearnForge · error");
+        continue;
+      }
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        pendingAttachments.push({ filename: file.name, mime: file.type || "", data: dataUrl });
+      } catch (e) { /* 单文件读失败忽略 */ }
+    }
+    fileInput.value = "";  // 允许重复选同一文件
+    renderAttachChips();
+  });
+}
 const activityLog = document.querySelector("#activityLog");
 const agentChain = document.querySelector("#agentChain");
 const chainStatus = document.querySelector("#chainStatus");
@@ -682,11 +732,17 @@ function startThinking() {
 
 async function sendPrompt(text, opts = {}) {
   const mockAction = opts.mockAction || null;
+  // 抓取并清空待发附件（mock 进行中不带附件）。
+  const attachments = state.mock.active ? [] : pendingAttachments.splice(0);
+  renderAttachChips();
   if (opts.addUser !== false) {
     const tag = mockAction === "side" ? "插问 · You"
       : state.mock.active ? "MOCK · You" : `${state.mode.toUpperCase()} · You`;
-    addMessage("user", text, tag);
-    touchConversation(text);  // 刷新当前对话标题/时间并置顶
+    const shown = attachments.length
+      ? `${text || ""}\n📎 ${attachments.map((a) => a.filename).join("、")}`.trim()
+      : text;
+    addMessage("user", shown, tag);
+    touchConversation(text || "（附件）");  // 刷新当前对话标题/时间并置顶
   }
   const thinking = startThinking();
   chainStatus.textContent = "running";
@@ -706,6 +762,7 @@ async function sendPrompt(text, opts = {}) {
         mock_session_id: state.mock.sessionId,
         mock_action: mockAction,
         mock_question: state.mock.lastQuestion || null,
+        attachments: attachments.length ? attachments : null,
       }),
       signal: controller.signal,
     });
@@ -780,7 +837,7 @@ async function sendPrompt(text, opts = {}) {
 composer.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
-  if (!text) return;
+  if (!text && pendingAttachments.length === 0) return;  // 允许"仅附件"发送
   promptInput.value = "";
   promptInput.disabled = true;
   try {

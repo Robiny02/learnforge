@@ -26,14 +26,17 @@ class SynthesizerAgent(BaseAgent):
     agent_id = AgentId.SYNTHESIZER
 
     def run(self, payload: SynthesizerInput) -> SynthesizerOutput:
+        # 证据/上下文经 assembler 的有序槽位注入（retrieved → session → user_input），
+        # 不再手工拼进 prompt——稳定 prefix 之后、缓存边界外，且消除各 agent 各拼一套的漂移。
         evidence = self._format_evidence(payload)
         atoms = ", ".join(a.title for a in payload.scoped_atoms) if payload.scoped_atoms else "无"
-        head = (
-            f"问题：{payload.question}\n"
-            f"检索证据：\n{evidence}\n"
-            f"相关 Atom：{atoms}\n"
-            f"项目上下文：{payload.project_context or '无'}\n"
-        )
+        retrieved_block = f"检索证据：\n{evidence}\n相关 Atom：{atoms}"
+        # 用户附件文本(MD/PDF/TXT)作为自带证据并入 retrieved 槽；图片走 vision(见下方 images=)。
+        if payload.attachment_text:
+            retrieved_block += f"\n\n用户上传的附件内容：\n{payload.attachment_text}"
+        session_block = (f"项目上下文：{payload.project_context}"
+                         if payload.project_context else "")
+        head = f"问题：{payload.question}\n"
         if _is_interview_coaching(payload.question):
             prompt = head + (
                 "用户在问『这道面试题/这类问题我该怎么回答』，要的是可以直接照着说的答案，"
@@ -64,7 +67,9 @@ class SynthesizerAgent(BaseAgent):
                 "每节用短段落或 bullet，避免整段堆在一起。\n"
                 "如果用户明确要求极简，再压缩到 1-3 句。输出 draft 与 claims。"
             )
-        out = self.llm_structured(prompt, SynthesizerOutput, max_tokens=2304)
+        out = self.llm_structured(prompt, SynthesizerOutput, max_tokens=2304,
+                                  retrieved=retrieved_block, session=session_block,
+                                  images=payload.image_data_urls or None)
         if out is not None:
             return out
         # 回退：无 LLM 时给占位草稿（链路通）。

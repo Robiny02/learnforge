@@ -137,6 +137,10 @@ class QAAgent(BaseAgent):
 
     def run(self, payload: QAInput) -> QAOutput:
         """默认 ReAct（简单题快答 / 项目·research 才调工具）；无 LLM 时回退固定链。"""
+        # 带附件(图片/文档)→ 走完整链(检索+合成)，让 synthesizer 拿到附件文本/图片，
+        # 不抄 fast/react 近路(那两条不喂附件)。
+        if payload.attachment_text or payload.image_data_urls:
+            return self._run_chain(payload)
         if self._is_fast_concept(payload):
             return self._run_fast_concept(payload)
         if LLM.available and self.skill is not None:
@@ -451,6 +455,8 @@ class QAAgent(BaseAgent):
                 retrieved=chunks,
                 scoped_atoms=payload.scoped_atoms,
                 project_context=payload.project_context_ref,
+                attachment_text=payload.attachment_text,
+                image_data_urls=payload.image_data_urls,
             )
         )
 

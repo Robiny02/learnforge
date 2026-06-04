@@ -20,6 +20,8 @@ embeddings = ["openai>=1.0", "voyageai>=0.2"]
 # PostgreSQL 知识库后端（可选）。未安装时仅用 SQLite，相关测试自动 skip。
 # pgvector 扩展在 DB 侧；Python 侧仅需 psycopg（向量以字符串字面量传参）。
 postgres = ["psycopg[binary]>=3.1"]
+# 多模态附件输入（可选）。pypdf 抽 PDF 文本；缺失时 PDF 优雅降级，图片/MD/TXT 不受影响。
+multimodal = ["pypdf>=4.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
