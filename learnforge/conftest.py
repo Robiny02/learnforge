@@ -20,6 +20,10 @@ os.environ["OPENROUTER_API_KEY"] = ""
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 
+# mock 面试 checkpoint 测试用进程内 MemorySaver：每个 agent 实例独立、零落盘，
+# 不污染工作目录 DB（持久化由 tests/test_mock_persistence.py 专门覆盖，显式开启 SqliteSaver）。
+os.environ["LF_MOCK_CHECKPOINT"] = "memory"
+
 # 确保 learnforge 包可导入（conftest 所在目录会被 pytest 加入 sys.path）。
 sys.path.insert(0, str(Path(__file__).parent))
 

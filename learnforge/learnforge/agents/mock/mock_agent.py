@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Any, Optional
 
@@ -21,6 +22,41 @@ from .coach import CoachAgent
 from .interviewer import InterviewerAgent
 from .judge import JudgeAgent
 from .strategist import StrategistAgent
+
+
+def _checkpoint_sidecar_path(db_path: Optional[str]) -> str:
+    """mock checkpoint 落在主库旁的 sidecar 文件（与知识库 schema 解耦，避免锁竞争）。"""
+    from ...config import DB_PATH
+
+    main = db_path or DB_PATH
+    folder = os.path.dirname(main)
+    return os.path.join(folder, "mock_checkpoints.db") if folder else "mock_checkpoints.db"
+
+
+def _build_checkpointer(db_path: Optional[str]) -> Optional[Any]:
+    """默认用 SqliteSaver 持久化 mock 图状态（跨进程重启可 resume）。
+
+    - `LF_MOCK_CHECKPOINT=memory`（测试/临时）→ 返回 None，子图回退进程内 MemorySaver；
+    - 缺 langgraph-checkpoint-sqlite / 建库失败 → 返回 None，优雅回退，不阻断面试。
+    checkpoint 库路径：`LF_MOCK_CHECKPOINT_DB` 覆盖，否则主库旁的 mock_checkpoints.db。
+    """
+    if os.getenv("LF_MOCK_CHECKPOINT", "").lower() == "memory":
+        return None
+    try:
+        import sqlite3
+
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path = os.getenv("LF_MOCK_CHECKPOINT_DB") or _checkpoint_sidecar_path(db_path)
+        conn = sqlite3.connect(path, check_same_thread=False)
+        saver = SqliteSaver(conn)
+        try:
+            saver.setup()  # 幂等建 checkpoints/writes 表
+        except Exception:
+            pass
+        return saver
+    except Exception:
+        return None  # 缺包/IO 失败 → MemorySaver 兜底（仅进程内，不阻断当场面试）
 
 
 class MockInterviewAgent(BaseAgent):
@@ -37,6 +73,10 @@ class MockInterviewAgent(BaseAgent):
         # 仓储句柄（best-effort 落库；DB 不可用时子图静默跳过）。
         self.mock_repo = self._maybe_repo("MockSessionRepository")
         self.event_repo = self._maybe_repo("EventRepository")
+        # checkpoint：默认 SqliteSaver（跨重启可 resume）；缺包/测试 → MemorySaver 兜底。
+        if checkpointer is None:
+            checkpointer = _build_checkpointer(db_path)
+        self.persistent = checkpointer is not None  # 供观测：是否落盘持久化
         # 延迟导入避免 graph 包 ↔ agents 包的循环 import（在实例化期模块已全部加载）。
         from ...graph.mock_graph import build_mock_subgraph
 
@@ -90,12 +130,27 @@ class MockInterviewAgent(BaseAgent):
                control_action: Optional[str] = None) -> MockOutput:
         self.require_tool("mock.checkpoint")
         config = {"configurable": {"thread_id": session_id}}
+        # 护栏：无可恢复的中断点（重启后 checkpoint 丢失 / 会话不存在 / 已结束）→ 优雅过期，
+        # 不再盲目 Command(resume=...)（那会在空状态上从 START 重放、读 state["topic"] 抛 KeyError）。
+        if not self._has_resumable(config):
+            return MockOutput(
+                session_id=session_id, status="expired",
+                followup="该模拟面试会话已过期或不存在（可能服务重启过）。请重新开始一场面试。",
+            )
         result = self.graph.invoke(
             Command(resume={"user_answer": user_answer, "user_interrupt": user_interrupt,
                             "control_action": control_action}),
             config=config,
         )
         return self._to_output(session_id, result, config)
+
+    def _has_resumable(self, config: dict) -> bool:
+        """该 thread 是否停在一个可 resume 的中断点（S3/S_PAUSE）。"""
+        try:
+            snap = self.graph.get_state(config)
+        except Exception:
+            return False
+        return bool(getattr(snap, "next", ()))
 
     # ------------------------------------------------------------- 输出装配
     def _to_output(self, session_id: str, result: dict, config: dict) -> MockOutput:

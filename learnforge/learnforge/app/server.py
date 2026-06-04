@@ -322,7 +322,13 @@ def _mock_response(mgr, out, sid: str) -> dict:
     last_score = out.turn_scores[-1].model_dump() if out.turn_scores else None
     if last_score:
         body["mock_score"] = last_score
-    if out.status == "active":
+    if out.status == "expired":
+        # 会话已过期（多半服务重启过、checkpoint 丢失）→ 退出面试态，提示重开。
+        body["mock_active"] = False
+        body["mock_session_id"] = None
+        body["mock_expired"] = True
+        body["reply_text"] = out.followup or "该模拟面试会话已过期，请重新开始一场面试。"
+    elif out.status == "active":
         # 即时控制（里程碑2）时 followup 携带提示/答案/点评/跳过说明，连同题目一起回显。
         parts = [p for p in (out.followup, out.question) if p]
         body["reply_text"] = "\n\n".join(parts) or "请作答。"

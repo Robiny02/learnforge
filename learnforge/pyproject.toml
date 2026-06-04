@@ -11,6 +11,8 @@ dependencies = [
     "uvicorn>=0.29",
     "anthropic>=0.34",
     "sqlite-vec>=0.1.1",
+    # mock 面试 checkpoint 持久化（跨进程重启可恢复）；缺失时回退进程内 MemorySaver。
+    "langgraph-checkpoint-sqlite>=2.0",
 ]
 
 [project.optional-dependencies]
