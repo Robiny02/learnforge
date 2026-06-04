@@ -137,10 +137,10 @@ class QAAgent(BaseAgent):
 
     def run(self, payload: QAInput) -> QAOutput:
         """默认 ReAct（简单题快答 / 项目·research 才调工具）；无 LLM 时回退固定链。"""
-        # 带附件(图片/文档)→ 走完整链(检索+合成)，让 synthesizer 拿到附件文本/图片，
-        # 不抄 fast/react 近路(那两条不喂附件)。
+        # 带附件(图片/文档)→ 直接走 synthesizer(文档/图片即证据)，跳过 router/retrieval/verifier：
+        # verifier 会把分节结构压成一段(实测让「介绍这个文档」退化成一句话)，且多 3 次 LLM 往返。
         if payload.attachment_text or payload.image_data_urls:
-            return self._run_chain(payload)
+            return self._run_attachment(payload)
         if self._is_fast_concept(payload):
             return self._run_fast_concept(payload)
         if LLM.available and self.skill is not None:
@@ -431,6 +431,33 @@ class QAAgent(BaseAgent):
         return QAOutput(
             answer=res.text or "（未能生成回答）", citations=citations,
             verdict=verdict, confidence=confidence, topic=topic or "general",
+        )
+
+    # ---------------- 附件问答（文档/图片即证据，单次合成，保结构化深度）----------------
+    def _run_attachment(self, payload: QAInput) -> QAOutput:
+        """上传文档/图片的问答：附件本身就是证据，直接交 synthesizer 一次合成。
+
+        不走 router/retrieval/verifier——附件内容无需对共享库核验，verifier 还会把
+        结构化分节压扁成一段；单次合成既保深度又省 3 次 LLM 往返(降延迟)。
+        """
+        self.require_tool("agent.synthesizer")
+        draft = self.synthesizer.run(
+            SynthesizerInput(
+                question=payload.question,
+                retrieved=[],
+                scoped_atoms=payload.scoped_atoms,
+                project_context=payload.project_context_ref,
+                attachment_text=payload.attachment_text,
+                image_data_urls=payload.image_data_urls,
+            )
+        )
+        self.last_cost_usd = getattr(self.synthesizer, "last_cost_usd", 0.0)
+        return QAOutput(
+            answer=draft.draft,
+            citations=[],
+            verdict=Verdict.UNCERTAIN,
+            confidence=0.7,
+            topic="attachment",
         )
 
     # ---------------- 固定链（离线兜底，原 Phase 2 行为）----------------

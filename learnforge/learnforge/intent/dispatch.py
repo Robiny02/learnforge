@@ -119,6 +119,12 @@ class Dispatcher:
         if forced in _CAPS:
             return Route(mode="single", capability=forced, confidence=0.95, signals=["forced_mode"])
 
+        # 自包含纯概念问句（八股「什么是 X / 介绍一下 X / 为什么…」）→ 直接 qa，免一次 LLM 路由
+        # 往返。这是最常见路径，省掉 _INTENT_MODEL（默认 gpt-4o）的网络调用，显著降延迟；自包含句
+        # 本就不借上文（见 _apply_carry），短路与既有承接语义一致。带能力关键词/信号的不走此路。
+        if S.is_self_contained(t) and not self._looks_like_other_capability(t):
+            return Route(mode="single", capability="qa", confidence=0.7, signals=["concept_shortcut"])
+
         # ── L1 一次轻量分类（LLM 2 字段）；无 key/失败 → ③ ──
         draft = self._classify(t, ctx)
         if draft is None:
@@ -178,6 +184,17 @@ class Dispatcher:
                                capability=cap if cap in _CAPS else "qa")
         except Exception:  # noqa: BLE001 - 路由失败不阻断，退回规则
             return None
+
+    @staticmethod
+    def _looks_like_other_capability(text: str) -> bool:
+        """本句是否带非 qa 能力线索（复合/计划/诊断/mock/笔记）——带则不走概念短路。"""
+        low = (text or "").lower()
+        if any(c in low for c in _PREP_CUES):
+            return True
+        for kws in _CAP_KEYWORDS.values():
+            if any(k in low for k in kws):
+                return True
+        return S.has_mock_signal(text) or S.has_plan_signal(text) or S.is_note_request(text)
 
     # ------------------------------------------------------------------ ③ rules
     @staticmethod

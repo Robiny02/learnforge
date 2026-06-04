@@ -2,28 +2,66 @@ const conversation = document.querySelector("#conversation");
 const composer = document.querySelector("#composer");
 const promptInput = document.querySelector("#promptInput");
 const modeSelect = document.querySelector("#modeSelect");
+const modeTabs = Array.from(document.querySelectorAll("#modeTabs button"));
 const attachBtn = document.querySelector("#attachBtn");
 const fileInput = document.querySelector("#fileInput");
 const attachSlot = document.querySelector("#attachSlot");
+const attachEmpty = document.querySelector("#attachEmpty");
+const contextPct = document.querySelector("#contextPct");
+const contextFill = document.querySelector("#contextFill");
+const statusContext = document.querySelector("#statusContext");
 
-// 待发送的本地附件（像 ChatGPT：📎 选文件 → 进 chip 槽 → 随消息发送）。
+// 待发送的本地附件（背包栏 → 随下一条消息发送）。
 let pendingAttachments = [];  // [{filename, mime, data(dataURL)}]
+let lastMemoryTokens = 0;
+const CONTEXT_BUDGET_TOKENS = 128000;
+
+function estimateTokens(value) {
+  const text = String(value || "");
+  if (!text) return 0;
+  let cjk = 0;
+  for (const ch of text) {
+    if (("一" <= ch && ch <= "鿿") || ("぀" <= ch && ch <= "ヿ") || ("가" <= ch && ch <= "힣")) {
+      cjk += 1;
+    }
+  }
+  return Math.ceil(cjk + (text.length - cjk) / 4);
+}
+
+function updateContextUsage(extraTokens = 0) {
+  const historyText = state.history
+    .filter((item) => item.k === "msg" || item.k === "system" || item.k === "actions")
+    .map((item) => item.text || (item.actions || []).join("\n"))
+    .join("\n");
+  const pendingText = pendingAttachments.map((a) => `${a.filename} ${a.mime}`).join("\n");
+  const used = Math.max(0, estimateTokens(historyText) + estimateTokens(pendingText) + lastMemoryTokens + extraTokens);
+  const pct = Math.min(100, Math.round((used / CONTEXT_BUDGET_TOKENS) * 100));
+  if (contextPct) contextPct.textContent = `${pct}%`;
+  if (contextFill) {
+    contextFill.style.width = `${pct}%`;
+    contextFill.classList.toggle("warn", pct >= 65 && pct < 85);
+    contextFill.classList.toggle("danger", pct >= 85);
+  }
+  if (statusContext) statusContext.textContent = `${pct}% · ${used.toLocaleString()} tok`;
+}
 
 function renderAttachChips() {
   if (!attachSlot) return;
   attachSlot.innerHTML = "";
   attachSlot.hidden = pendingAttachments.length === 0;
+  if (attachEmpty) attachEmpty.hidden = pendingAttachments.length > 0;
   pendingAttachments.forEach((a, i) => {
     const chip = document.createElement("span");
     chip.className = "attach-chip";
-    const icon = a.mime.startsWith("image/") ? "🖼️" : a.mime.includes("pdf") ? "📄" : "📝";
-    chip.innerHTML = `${icon} <span class="attach-name">${a.filename}</span> <button type="button" class="attach-x" aria-label="移除">✕</button>`;
+    const kind = a.mime.startsWith("image/") ? "IMG" : a.mime.includes("pdf") ? "PDF" : "TXT";
+    chip.innerHTML = `<span class="attach-kind">${kind}</span><span class="attach-name">${a.filename}</span><button type="button" class="attach-x" aria-label="移除">×</button>`;
     chip.querySelector(".attach-x").addEventListener("click", () => {
       pendingAttachments.splice(i, 1);
       renderAttachChips();
     });
     attachSlot.appendChild(chip);
   });
+  updateContextUsage();
 }
 
 function readFileAsDataURL(file) {
@@ -119,6 +157,7 @@ function pushHistory(entry) {
   if (state.replaying) return;
   state.history.push(entry);
   saveHistory();
+  updateContextUsage();
 }
 
 // 载入当前 session 的聊天记录并回放到界面（无记录 → 显示欢迎语）。
@@ -146,6 +185,7 @@ function loadTranscript(showRestoredNote) {
     addMessage("agent", GREETING, "LearnForge · Manager");
   }
   state.replaying = false;
+  updateContextUsage();
 }
 
 // ---------------- 多对话管理（Claude 风格左侧列表）----------------
@@ -173,6 +213,8 @@ function setActiveSession(id) {
 function resetMemoryPanel() {
   if (memoryLog) memoryLog.innerHTML = `<p class="log-line"><span>Idle</span> 等待对话，加载的 prompt / 文件会显示在这里</p>`;
   if (memTokens) memTokens.textContent = "0 tok";
+  lastMemoryTokens = 0;
+  updateContextUsage();
 }
 
 function renderConvList() {
@@ -272,6 +314,7 @@ function renderMemoryLog(mem) {
   const loaded = Array.isArray(mem.loaded) ? mem.loaded : [];
   const events = Array.isArray(mem.events) ? mem.events : [];
   const total = loaded.reduce((acc, x) => acc + (x.tokens || 0), 0);
+  lastMemoryTokens = total;
   if (memTokens) memTokens.textContent = `${total} tok`;
   const rows = [];
   loaded.forEach((x) => {
@@ -292,6 +335,7 @@ function renderMemoryLog(mem) {
     rows.push(`<p class="log-line"><span>Memory</span>本轮未经记忆流水线（fast / mock 路径）</p>`);
   }
   memoryLog.innerHTML = rows.join("");
+  updateContextUsage();
 }
 
 function inlineMarkdown(value) {
@@ -365,9 +409,18 @@ function setMode(mode) {
   state.mode = mode;
   promptInput.placeholder = modeCopy[mode] || modeCopy.qa;
   statusMode.textContent = mode.toUpperCase();
+  if (modeSelect) modeSelect.value = mode;
+  modeTabs.forEach((button) => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
 }
 
-modeSelect.addEventListener("change", () => setMode(modeSelect.value));
+if (modeSelect) modeSelect.addEventListener("change", () => setMode(modeSelect.value));
+modeTabs.forEach((button) => {
+  button.addEventListener("click", () => setMode(button.dataset.mode || "qa"));
+});
 
 // 意图判定（作答/插问/退出/暂停 + 退出确认）全部由后端轻量 LLM 语义完成，前端不再硬编码关键词。
 
@@ -401,7 +454,7 @@ function setMockActive(active, sessionId) {
     state.mock.turns = 0;
   }
   if (mockToggle) {
-    mockToggle.textContent = active ? "⏹ 结束 Mock" : "🎤 开始 Mock";
+    mockToggle.textContent = active ? "结束 Mock" : "开始 Mock";
     mockToggle.setAttribute("aria-pressed", active ? "true" : "false");
     mockToggle.classList.toggle("active", active);
   }
@@ -409,7 +462,7 @@ function setMockActive(active, sessionId) {
     statusMode.textContent = "MOCK";
     promptInput.placeholder = "直接作答；问号/“解释一下”可插问；说“结束”出复盘…";
   } else {
-    setMode(modeSelect.value);
+    setMode((modeSelect && modeSelect.value) || state.mode || "qa");
   }
   persistMock();
 }
@@ -423,7 +476,7 @@ function requestExitConfirm() {
 
 // 进行中 mock 的输入分流：显式切到非 Mock 子模式 = 明确插问；否则 auto（后端 4 类语义分流）。
 async function dispatchMockInput(text, addUser) {
-  if (modeSelect.value !== "mock") return sendPrompt(text, { mockAction: "side", addUser });
+  if (modeSelect && modeSelect.value !== "mock") return sendPrompt(text, { mockAction: "side", addUser });
   return sendPrompt(text, { mockAction: "auto", addUser });
 }
 
@@ -456,7 +509,6 @@ if (mockToggle) {
       const topic = promptInput.value.trim();
       promptInput.value = "";
       setMode("mock");
-      modeSelect.value = "mock";
       await sendPrompt(topic || "开始模拟面试");
     }
   });
@@ -636,6 +688,8 @@ function renderActivity(data) {
   if (data.trace_id) {
     traceId.textContent = data.trace_id;
     logLine("Trace", data.trace_id);
+  } else if (traceId) {
+    traceId.textContent = data.mock ? "trace mock-local" : "trace unavailable";
   }
   const responses = Array.isArray(data.responses) ? data.responses : [];
   responses.forEach((response, index) => {
@@ -739,7 +793,7 @@ async function sendPrompt(text, opts = {}) {
     const tag = mockAction === "side" ? "插问 · You"
       : state.mock.active ? "MOCK · You" : `${state.mode.toUpperCase()} · You`;
     const shown = attachments.length
-      ? `${text || ""}\n📎 ${attachments.map((a) => a.filename).join("、")}`.trim()
+      ? `${text || ""}\n附件：${attachments.map((a) => a.filename).join("、")}`.trim()
       : text;
     addMessage("user", shown, tag);
     touchConversation(text || "（附件）");  // 刷新当前对话标题/时间并置顶

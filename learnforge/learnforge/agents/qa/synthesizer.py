@@ -37,6 +37,35 @@ class SynthesizerAgent(BaseAgent):
         session_block = (f"项目上下文：{payload.project_context}"
                          if payload.project_context else "")
         head = f"问题：{payload.question}\n"
+        if payload.attachment_text and not _is_interview_coaching(payload.question):
+            # 用户上传了文档（如开源 SKILL.md / 设计稿 / 简历 / JD）：要的是「把这份文档讲清楚」，
+            # 不是套八股模板。基于完整文档内容做结构化深度讲解，覆盖文档实际写了什么。
+            prompt = head + (
+                "用户上传了一份文档，并希望你基于**完整文档内容**讲清楚它。绝不要套用八股概念模板，"
+                "也不要只用一两句话泛泛概括——要忠实、具体、可执行地把这份文档拆开讲。\n"
+                "请用 Markdown 分节，按文档实际内容组织（标题按需取舍，不必全有）：\n"
+                "### 这是什么 —— 一句话定位 + 解决什么问题 / 适用场景。\n"
+                "### 核心能力 —— 它能做的关键功能逐条列出（贴合文档里写的，不要编造）。\n"
+                "### 使用流程 —— 按文档描述的步骤/工作流讲清怎么用（有命令/参数就带上真实示例）。\n"
+                "### 关键参数与约定 —— 重要参数、命名规则、输入输出格式、限制条件。\n"
+                "### 典型示例 —— 用文档里的或贴合文档的具体例子演示一次端到端用法。\n"
+                "### 注意事项与边界 —— 坑、前置条件、不支持的场景、性能/缓存等注意点。\n"
+                "### 一句话总结 —— 给一个可复述的电梯陈述。\n"
+                "要求：内容必须来自上传文档；文档没提到的别硬编，可标注『文档未说明』。"
+                "宁可详尽也不要空泛，覆盖文档的主要小节。输出 draft 与 claims。"
+            )
+            out = self.llm_structured(prompt, SynthesizerOutput, max_tokens=2304,
+                                      retrieved=retrieved_block, session=session_block,
+                                      images=payload.image_data_urls or None)
+            if out is not None:
+                return out
+            return SynthesizerOutput(
+                draft=(
+                    "### 这是什么\n我读到了你上传的文档，但这次没能生成完整讲解。先把文档要点摘给你：\n\n"
+                    f"{payload.attachment_text[:1600]}"
+                ),
+                claims=[],
+            )
         if _is_interview_coaching(payload.question):
             prompt = head + (
                 "用户在问『这道面试题/这类问题我该怎么回答』，要的是可以直接照着说的答案，"
@@ -112,6 +141,7 @@ class SynthesizerAgent(BaseAgent):
     def _format_evidence(payload: SynthesizerInput) -> str:
         if not payload.retrieved:
             return "（无）"
+        # 证据预算放宽：每片 200→400 字、最多 10 片——避免上下文过度保守导致回答太浅。
         return "\n".join(
-            f"- [{c.chunk_id}] {c.text[:200]}" for c in payload.retrieved[:8]
+            f"- [{c.chunk_id}] {c.text[:400]}" for c in payload.retrieved[:10]
         )

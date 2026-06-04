@@ -28,6 +28,10 @@
         <div class="runtime">
           <span class="status-dot"></span>
           <span>offline-safe</span>
+          <div class="context-meter" id="contextMeter" title="本地估算：当前对话 + 已加载记忆 / 上下文预算">
+            <span id="contextPct">0%</span>
+            <div class="context-track" aria-hidden="true"><i id="contextFill"></i></div>
+          </div>
           <span id="traceId">trace idle</span>
         </div>
       </header>
@@ -62,17 +66,22 @@
                 <h1>和 LearnForge 对话</h1>
               </div>
               <div class="mode-control">
-                <label for="modeSelect">Mode</label>
-                <div class="select-wrap">
-                  <select id="modeSelect">
-                    <option value="qa">QA</option>
-                    <option value="diagnose">Diagnose</option>
-                    <option value="plan">Plan</option>
-                    <option value="note">Note</option>
-                    <option value="mock">Mock</option>
-                  </select>
+                <label id="modeLabel">Mode</label>
+                <div class="mode-tabs" id="modeTabs" role="tablist" aria-labelledby="modeLabel">
+                  <button type="button" class="active" data-mode="qa">QA</button>
+                  <button type="button" data-mode="diagnose">诊断</button>
+                  <button type="button" data-mode="plan">计划</button>
+                  <button type="button" data-mode="note">笔记</button>
+                  <button type="button" data-mode="mock">Mock</button>
                 </div>
-                <button type="button" id="mockToggle" class="mock-toggle" aria-pressed="false">🎤 开始 Mock</button>
+                <select id="modeSelect" aria-hidden="true" tabindex="-1">
+                  <option value="qa">QA</option>
+                  <option value="diagnose">Diagnose</option>
+                  <option value="plan">Plan</option>
+                  <option value="note">Note</option>
+                  <option value="mock">Mock</option>
+                </select>
+                <button type="button" id="mockToggle" class="mock-toggle" aria-pressed="false">开始 Mock</button>
               </div>
             </div>
 
@@ -86,12 +95,20 @@
               </article>
             </div>
 
-            <div class="attach-slot" id="attachSlot" hidden></div>
             <form class="composer" id="composer">
-              <button type="button" id="attachBtn" class="attach-btn" title="添加附件（图片/PDF/MD/文本）">📎</button>
-              <input type="file" id="fileInput" multiple accept="image/*,.pdf,.md,.markdown,.txt" hidden />
-              <input id="promptInput" autocomplete="off" placeholder="问一个问题，或描述你的学习目标..." />
-              <button type="submit">Send</button>
+              <div class="attachment-dock">
+                <div class="dock-title">
+                  <span>背包</span>
+                  <button type="button" id="attachBtn" class="attach-btn" title="添加附件（图片/PDF/MD/文本）">添加</button>
+                </div>
+                <input type="file" id="fileInput" multiple accept="image/*,.pdf,.md,.markdown,.txt" hidden />
+                <div class="attach-slot" id="attachSlot" hidden></div>
+                <p class="attach-empty" id="attachEmpty">图片、PDF、Markdown 会随下一条消息发送</p>
+              </div>
+              <div class="prompt-dock">
+                <input id="promptInput" autocomplete="off" placeholder="问一个问题，或描述你的学习目标..." />
+                <button type="submit">Send</button>
+              </div>
             </form>
           </section>
 
@@ -183,6 +200,7 @@
       <footer class="statusbar">
         <span>Mode: <strong id="statusMode">QA</strong></span>
         <span>Session: <strong id="sessionId">ui-default</strong></span>
+        <span>Context: <strong id="statusContext">0% · 0 tok</strong></span>
         <span>Graph: START -> manager_plan -> manager_execute -> manager_aggregate</span>
       </footer>
     </div>
