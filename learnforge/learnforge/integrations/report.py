@@ -45,17 +45,42 @@ def _item_focus(item: str) -> str:
     return text
 
 
+def _image_block(image: str, title: str) -> List[str]:
+    """信息图区块：有图(URL/路径)就嵌入 Markdown 图片，无图给一句占位提示。
+
+    参考 gpt-image house style（runtime/skills/gpt-image-2-style-library）——报告顶部用一张
+    flat-vector 学习路线图统领全篇。LF_GPT_IMAGE_AUTO 关闭时通常无图，此处优雅留白。
+    """
+    if image:
+        # 本地绝对路径转成前端可取的 /assets/<file> URL；已是 /assets URL 或 http(s) 则原样用。
+        src = image
+        if image.startswith("/") and not image.startswith("/assets/"):
+            src = f"/assets/{pathlib.Path(image).name}"
+        return [f"![{title} — learning roadmap]({src})", ""]
+    return [
+        "> 💡 信息图未生成。开启 `LF_GPT_IMAGE_AUTO=1` 或用前端「生成信息图」按钮，"
+        "可在此嵌入一张 house-style 学习路线图。",
+        "",
+    ]
+
+
 def report_generate_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     title = str(args.get("title") or "学习报告")
     summary = str(args.get("summary") or "")
     days = _normalize_days(args.get("days") or {})
     tips = [str(t) for t in (args.get("tips") or [])]
+    rationale = str(args.get("rationale") or "").strip()  # 模型产出的计划设计说明
+    image = str(args.get("image") or "").strip()          # 信息图 URL(/assets/..) 或路径；有图才嵌
     total_items = sum(len(items) for items in days.values())
     lines: List[str] = [
         f"# {title}",
         "",
         "> LearnForge study plan: diagnosis-driven, output-oriented, and mock-reviewable.",
         "",
+    ]
+    # 信息图：嵌入已生成的 infographic（house style PNG）；无图则留占位提示，不阻断。
+    lines += _image_block(image, title)
+    lines += [
         "## Overview",
         "",
         f"- Summary: {summary or '按弱点优先级生成的分天复习计划。'}",
@@ -63,6 +88,11 @@ def report_generate_handler(args: Dict[str, Any]) -> Dict[str, Any]:
         f"- Knowledge points: {total_items}",
         "- Loop: learn -> explain -> drill -> mock -> write weak memory",
         "",
+    ]
+    # 计划设计说明：直接渲染模型 rationale（优先于静态模板，保留模型的排序/验收/复盘设计）。
+    if rationale:
+        lines += ["## Plan Design", "", rationale, ""]
+    lines += [
         "## Priority Logic",
         "",
         "- Put blocking fundamentals before high-frequency interview drills.",
@@ -82,12 +112,12 @@ def report_generate_handler(args: Dict[str, Any]) -> Dict[str, Any]:
         lines += [
             "",
             "### Practice Tasks",
-            "- Write a 60-second oral explanation for each target.",
-            "- Add one mechanism diagram or step-by-step flow in your own words.",
+            f"- Write a 60-second oral explanation of **{focus}** (definition -> mechanism -> tradeoff).",
+            f"- Draw one mechanism diagram or step-by-step flow for {focus} in your own words.",
             "- Answer one follow-up: failure mode, tradeoff, or production debugging signal.",
             "",
             "### Acceptance Criteria",
-            "- Can explain definition, mechanism, tradeoff, and common pitfall without notes.",
+            f"- Can explain {focus} (definition, mechanism, tradeoff, common pitfall) without notes.",
             "- Can answer at least one mock follow-up without becoming vague.",
             "- Any uncertain answer is recorded as a `weak` memory note for the next diagnosis.",
             "",
@@ -124,6 +154,10 @@ _PARAMS = {
         "days": {"type": "object",
                  "additionalProperties": {"type": "array", "items": {"type": "string"}}},
         "tips": {"type": "array", "items": {"type": "string"}},
+        "rationale": {"type": "string",
+                      "description": "计划设计说明（排序依据/每日目标/验收/复盘节点），渲染成 Plan Design 段。"},
+        "image": {"type": "string",
+                  "description": "学习路线图信息图的 /assets URL 或本地路径，有则嵌入报告顶部。"},
     },
     "required": ["title", "summary", "days"],
 }

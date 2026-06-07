@@ -273,6 +273,25 @@ PLANNING_SKILL = SkillSpec(
         "emit_path_diff_with_rationale",
         "publish_polished_report",
     ],
+    progressive_sections={
+        "sop": (
+            "排程 SOP（逐条执行，勿跳步）：\n"
+            "1. 只用候选列表里的真实 atom_id；按 priority = weakness*goal_relevance*recency / max(mastery,0.2) 排序。\n"
+            "2. 分桶到 deadline：阻塞性基础在前，高频面试点居中，难点单独占一天并标注。\n"
+            "3. 每天容量克制（1-2 个知识点），保证当天能产出一段可面试表达，而非被动看完。\n"
+            "4. 每隔 1-2 个学习日插入一次 mock/QA 复盘节点，低分点回写 weak memory。\n"
+            "5. rationale 必须写成学习教练能用的设计说明（不是『已生成计划』）：\n"
+            "   - 为何这样排序（点名是哪个弱点/目标驱动）；\n"
+            "   - 每天的训练目标 + 练习方式 + 验收标准；\n"
+            "   - 何时用 mock/QA 验证。\n\n"
+            "few-shot（学 rationale 的颗粒度，按真实候选填）：\n"
+            "  目标：两周内补齐后端面试；诊断弱点：缓存(0.3)、并发(0.4)\n"
+            "  ✗ 烂 rationale：『按掌握度从低到高安排了 6 天复习。』\n"
+            "  ✓ 好 rationale：『缓存掌握度最低且是后端高频考点，放 Day1-2 先打通击穿/雪崩/一致性；"
+            "并发紧随其后(Day3-4)，每天产出一段 60s 口述 + 一个机制图；Day3 做一场 3-5 轮 mock 检验"
+            "缓存能否抗追问，低分点回写 weak memory 进下轮诊断。』"
+        )
+    },
     constraints=[
         "Never commit the path directly.",
         "Only emit incremental PathDiff, not full replacement.",
