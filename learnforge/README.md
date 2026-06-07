@@ -1,20 +1,23 @@
-# LearnForge (MVP Skeleton)
+# LearnForge
 
-面向程序员的学习伙伴 —— 严格 hierarchical multi-agent 系统的**架构骨架**。
+面向程序员的学习伙伴 —— **orchestrator + tools** 多智能体系统。
 
-> 当前阶段:**Phase 1-3 已落地**。架构完整、五能力链路全通,且在无 ANTHROPIC_API_KEY 时
-> 优雅降级到确定性兜底("链路永远通")。上游依据见 `docs/LearnForge-{Proposal,Design,Tasks}.md`。
+> 在无 `OPENROUTER_API_KEY` 时优雅降级到确定性兜底（"链路永远通"），测试全程离线可跑。
+> 完整架构与工程约定见仓库根目录 [`../README.md`](../README.md) 与 [`../CLAUDE.md`](../CLAUDE.md)。
 
 ## 架构总览
 
-- **ManagerAgent**（唯一调度者，plan-and-execute + replan≤2，唯一写者）统辖四个域 worker：
-  - **QAAgent**（外壳）→ RouterAgent / SynthesizerAgent / VerifierAgent
-  - **PlanningAgent**（generate + modify 合并）
-  - **MockInterviewAgent**（LangGraph 子图）→ InterviewerAgent / JudgeAgent / StrategistAgent / CoachAgent
-  - **DiagnosisAgent**（只读）
-- **RetrievalAgent**：横切共享子能力，统一检索入口；不被 Manager 直接调度。
+`ManagerAgent` 是**唯一调度者**，也是共享状态（mastery / learning_paths）的**唯一写者**；
+每个领域能力是它调用的一个**工具**（agent-as-tool）：
 
-共 **13 个 agent**。
+- **qa** — 检索增强问答（Router → Synthesizer → Verifier），带引用、可核验。
+- **diagnose** — 只读弱点诊断（ReAct 三段式），绝不改路径或 atom。
+- **plan** — 生成 / 修改学习路径，只产增量 `PathDiff`。
+- **mock** — 多轮模拟面试（Interviewer / Judge / Strategist / Coach，LangGraph 子图）。
+- **retrieval** — 横切共享检索能力，不被 Manager 直接调度。
+
+> Router / Synthesizer / Judge / Coach 等是**工具内部的子步骤**，不是独立工具。
+> `research` 已设计但尚未实现。
 
 ## 双层知识库与统一检索
 
@@ -69,7 +72,7 @@ python -m learnforge.eval.trajectory_eval   # 端到端拓扑 + 数据回流 + �
 ```
 learnforge/
 ├── contracts/        # ★ 所有数据契约（先于实现）：消息信封 / Atom / 状态 / 各 agent in&out
-├── agents/           # 13 个 agent 实现（Phase 1 为 stub）
+├── agents/           # 各工具实现：qa / diagnose / plan / mock + 共享 retrieval
 │   ├── qa/           #   QAAgent + Router/Synthesizer/Verifier
 │   └── mock/         #   MockInterviewAgent + Interviewer/Judge/Strategist/Coach
 ├── graph/            # LangGraph 主图骨架（compile + START→END）+ mock 子图占位

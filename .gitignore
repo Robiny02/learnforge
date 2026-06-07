@@ -1,15 +1,34 @@
+# Python
 .venv/
 __pycache__/
-.DS_Store
-.env
 *.pyc
-node_modules/
-target/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
 .idea/
 .vscode/
+
+# Secrets & local config
 .env
+
+# Local databases & runtime state
+*.db
+*.db-shm
+*.db-wal
 learnforge.db
 data/
 learnforge/data/
 learnforge/runtime/
+.tmp/
+
+# Node
+node_modules/
+target/
+
+# Generated artifacts (do not commit)
+learnforge/docs/reports/
+chunking_benchmark_v2/benchmark/reports/chunks/
 chunking_benchmark_v2/benchmark/reports/.cache/

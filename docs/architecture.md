@@ -4,7 +4,7 @@
 
 LearnForge 是一个面向程序员的多智能体学习伴侣，目标不是简单聊天，而是围绕“学习、诊断、规划、模拟面试、知识检索”形成可持续反馈闭环。系统把用户的问答、模拟面试表现、学习路径和长期记忆沉淀到本地数据库与 markdown 记忆文件中，再通过诊断和规划不断调整后续学习安排。
 
-项目当前是一个 Python 包，核心目录在 `learnforge/learnforge/`。它使用 LangGraph 编排多 agent 工作流，FastAPI 暴露 HTTP 接口，SQLite 作为默认本地状态与知识库，FTS5 和 sqlite-vec 支持全文与向量检索。没有 `ANTHROPIC_API_KEY` 时，LLM 调用会降级到确定性 fallback，保证“链路永远通”。
+项目当前是一个 Python 包，核心目录在 `learnforge/learnforge/`。它使用 LangGraph 编排多 agent 工作流，FastAPI 暴露 HTTP 接口，SQLite 作为默认本地状态与知识库，FTS5 和 sqlite-vec 支持全文与向量检索。没有 `OPENROUTER_API_KEY` 时，LLM 调用会降级到确定性 fallback，保证“链路永远通”。
 
 ## 核心目标
 
@@ -41,7 +41,11 @@ LangGraph 主图
  LocalUserSource / LocalSharedSource / RemoteSharedSource / PostgreSQL 扩展
 ```
 
-系统设计上共有 13 个 agent：
+> 术语：对外只有 **qa / diagnose / plan / mock**（+ 共享 retrieval）四个工具。下表中的
+> Router / Synthesizer / Judge / Coach 等是**工具内部的子步骤**，不是独立工具，请勿对外称
+> 「13 个 agent 系统」。
+
+下表列出系统内部各 agent 角色：
 
 | 层级 | Agent | 职责 |
 | --- | --- | --- |
