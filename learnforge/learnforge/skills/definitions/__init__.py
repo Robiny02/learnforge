@@ -424,6 +424,25 @@ INTERVIEWER_SKILL = SkillSpec(
     subskill_descriptions={},
     bash=NO_BASH,
     workflow=["read_history", "retrieve_material", "draft_question", "extract_expected_points"],
+    progressive_sections={
+        "sop": (
+            "出题 SOP（逐条执行，勿跳步）：\n"
+            "1. 读 last_answer 与候选人 claim：锁定一个**具体的、可追问真实性**的点，而非泛主题。\n"
+            "2. 按 pick_grill_round 的轮次意图出题：真实边界 → 技术细节 → JD 对齐 → 情景题。\n"
+            "3. 题目必须满足质量门槛（任一不满足就重写）：\n"
+            "   - 锚定到候选人说过的某句话/某个数字/某段经历，而不是『请介绍 X』；\n"
+            "   - 单一焦点，能在 2-3 分钟答完，不一题塞多问；\n"
+            "   - 逼出证据或边界（『怎么证明』『QPS 多少』『失败时如何处理』）。\n"
+            "4. expected_points 写 2-4 条**评分锚点**（答到什么算合格），不是答案本身。\n"
+            "5. 不重复 asked 里的题；不超出指定难度。\n\n"
+            "few-shot（学这个对照，不要照抄题面）：\n"
+            "  候选人 claim：『我用 Redis 做了缓存，QPS 提升很多』\n"
+            "  ✗ 烂题：『请介绍一下 Redis 缓存。』（泛泛、没锚定、考不出真实性）\n"
+            "  ✓ 好题：『你说 QPS 提升很多——提升前后具体多少？用什么压测的？缓存击穿/雪崩当时怎么防的，"
+            "有没有 bad case？』\n"
+            "    expected_points: [给出量化前后对比, 说明压测方法, 缓存击穿/雪崩的具体防护]"
+        )
+    },
     constraints=["Do not score.", "Do not reveal expected_points to the user as an answer key."],
     input_schema=InterviewerInput,
     output_schema=InterviewerOutput,
@@ -496,6 +515,25 @@ COACH_SKILL = SkillSpec(
     subskill_descriptions={},
     bash=NO_BASH,
     workflow=["aggregate_scores", "extract_evidence_backed_weaknesses", "draft_next_steps"],
+    progressive_sections={
+        "sop": (
+            "复盘 SOP（逐条执行）：\n"
+            "1. 通读逐轮 overall/missed_points/risk_flags，找重复出现的失分模式（跨轮的才是真弱点）。\n"
+            "2. summary：2-3 句，点出整体水平 + 最致命的 1 个问题，不写客套话。\n"
+            "3. 每条 weakness 必带 evidence=『第N轮…』，引具体那一轮的失分；泛泛建议一律删。\n"
+            "4. 对 risk_flags 非空或 overall≤2 的轮，产出 answer_card；最多 3 张，挑最该改的。\n"
+            "5. next_steps：可执行、可验证（『复盘 X 的 bad case 并能说出取舍』），不写『多练习』。\n\n"
+            "answer_card 质量门槛 + few-shot（学结构，按真实轮次填）：\n"
+            "  question：『你说服务做了高可用，怎么做的？』  user_answer：『加了多个实例就高可用了。』\n"
+            "  ✓ 卡片：\n"
+            "    why_risky: 只说『加实例』，答不出故障转移/数据一致/探活，一追就穿。\n"
+            "    dangerous: 『部署多个实例就高可用了』——会被追问『主挂了怎么切、切换期间请求怎么办』。\n"
+            "    passable: 承认只做了无状态多副本 + LB，故障转移依赖云厂商，没自己实现选主。\n"
+            "    strong: 讲清健康探活→摘流→故障转移的链路，给一个真实演练/故障案例与当时的取舍。\n"
+            "    evidence_needed: 一次真实故障/演练记录、切换耗时指标、可用性 SLO 数字。\n"
+            "  原则：不奖励夸大，passable 只讲真实做过的，strong 指明该补什么证据。"
+        )
+    },
     constraints=["Each weakness needs evidence.", "If fewer than two scored turns, state sample is insufficient."],
     input_schema=CoachInput,
     output_schema=CoachReport,
@@ -557,7 +595,8 @@ DIAGNOSIS_SKILL = SkillSpec(
     },
     max_react_steps=5,
     progressive_sections={
-        "react_sop": (
+        # 键名用 "sop" 以便被 load_instructions 默认加载链激活（原 "react_sop" 从未被加载）。
+        "sop": (
             "Diagnosis ReAct SOP:\n"
             "1. Call diagnosis.search_events first; do not infer from memory alone.\n"
             "2. Call diagnosis.get_mastery_snapshot only for atom_refs observed in evidence.\n"

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional
 
 from ...contracts.agents.mock import InterviewerInput, InterviewerOutput
@@ -13,6 +14,8 @@ from ...contracts.enums import AgentId, KnowledgeScope, RetrievalMethod
 from . import interview_skill as IS
 from ..base import BaseAgent
 from ..retrieval import RetrievalAgent
+
+logger = logging.getLogger(__name__)
 
 
 class InterviewerAgent(BaseAgent):
@@ -39,7 +42,9 @@ class InterviewerAgent(BaseAgent):
                         query=payload.topic,
                         top_k=4,
                         scopes=[KnowledgeScope.SHARED],
-                        method=RetrievalMethod.FULLTEXT,
+                        # HYBRID(FTS+向量 RRF)而非纯 FULLTEXT：FTS5 不切中文，中文主题靠向量召回兜底，
+                        # 避免无证据 → 退化成泛泛题（见 agents/retrieval/CLAUDE.md）。
+                        method=RetrievalMethod.HYBRID,
                     )
                 ).chunks
                 self._topic_cache[payload.topic] = list(chunks)
@@ -62,10 +67,21 @@ class InterviewerAgent(BaseAgent):
             f"{self._grilling_brief(payload)}"
             "出一道该难度的面试题/追问，给出考点 expected_points 与相关 atom_refs。"
         )
-        out = self.llm_structured(prompt, InterviewerOutput, max_tokens=512)
+        # max_tokens 提到 768：题目 + expected_points + atom_refs 的 JSON 在 512 下偶尔截断，
+        # 截断 → 解析失败 → llm_structured 返回 None → 静默退化到模板题。
+        out = self.llm_structured(prompt, InterviewerOutput, max_tokens=768)
         if out is not None and out.question:
             return out
 
+        from ...llm.client import LLM
+        if LLM.available:
+            # LLM 可用却没产出有效题（截断/解析失败），说明不是离线降级而是真失败——出声以便排查，
+            # 不再静默把模板题当成「LLM 出的题」。
+            logger.warning(
+                "Interviewer LLM produced no usable question (topic=%r, turn=%d); "
+                "falling back to template. Likely truncation or parse failure.",
+                payload.topic, payload.turn_index,
+            )
         # 兜底：证据式追问（接入 LLMInternSkill）；无上下文时退回题库/模板题。
         atom_refs: List[str] = [c.chunk_id for c in chunks[:2]]
         return self._fallback_question(payload, atom_refs)

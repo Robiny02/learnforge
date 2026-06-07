@@ -103,10 +103,13 @@ class Skill:
     def load_instructions(self, sections: Optional[List[str]] = None) -> str:
         """渐进式加载 skill 说明。
 
-        默认只加载 front/constraints/workflow 这些高信号、稳定的边界信息；
+        默认加载 front/constraints/workflow + sop 这些高信号、稳定的边界信息；
         调用方需要工具细节、子 skill 细节、bash 能力或扩展材料时再按 section 名称加载。
+
+        `sop`：progressive_sections 里的显式标准操作流程（借鉴 Reactor-Agent 的 Skill+SOP——
+        用编号步骤 + 质量门槛 + few-shot 样例压住模型漂移）。没有该段的 skill 渲染为空被跳过。
         """
-        selected = sections or ["front", "constraints", "workflow"]
+        selected = sections or ["front", "constraints", "workflow", "sop"]
         chunks: List[str] = []
         for section in selected:
             rendered = self._render_section(section)

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import List
 
 from ...contracts.agents.mock import (
@@ -20,6 +21,8 @@ from ...contracts.message import EventPayload
 from . import interview_skill as IS
 from ..base import BaseAgent
 
+logger = logging.getLogger(__name__)
+
 
 class CoachAgent(BaseAgent):
     agent_id = AgentId.COACH
@@ -32,7 +35,18 @@ class CoachAgent(BaseAgent):
                 events=[],
             )
 
-        out = self.llm_structured(self._build_prompt(payload), CoachReport, max_tokens=1024)
+        # max_tokens 1024→1600：CoachReport 字段多（summary/strengths/weaknesses/next_steps +
+        # 最多 3 张 answer_card×5 字段），1024 经常截断 → 解析失败 → 静默退化到 _heuristic_report
+        # （那是故意简短的兜底，用户会误以为是「LLM 复盘」）。
+        out = self.llm_structured(self._build_prompt(payload), CoachReport, max_tokens=1600)
+        if out is None:
+            from ...llm.client import LLM
+            if LLM.available:
+                logger.warning(
+                    "Coach LLM produced no usable report (%d scored turns); falling back to "
+                    "heuristic. Likely truncation or parse failure—raise max_tokens if persistent.",
+                    len(scored),
+                )
         report = out if out is not None else self._heuristic_report(payload)
         # answer cards 恒以确定性规则补全（接入 LLMInternSkill）：高风险/低分轮 → 更优回答建议。
         if not report.answer_cards:
