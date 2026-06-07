@@ -16,6 +16,20 @@
 - `DiagnosisInput`：`time_window`(默认 30d) / `focus_topics` / `trigger`(user|post_mock|composite)。
 - `DiagnosisResult`：`weak_atoms` + `clusters`(severity) + `recommendations` + `confidence`。
 
+## 简历问题诊断（resume review）
+
+- 入口：`DiagnosisAgent.diagnose_resume(resume_text, context?, persist=True) -> ResumeDiagnosis`。
+  蒸馏自 llm-intern-skill，复用 `agents/mock/interview_skill.py`（overclaim/no_evidence/vague + 降级）。
+  规则引擎在 `resume.py`（离线确定性兜底）；LLM 路径用 skill `diagnosis.resume.v1`（SOP+few-shot）。
+- 输出 `ResumeDiagnosis`（contract）：`issues`(category/severity/excerpt/problem/suggestion/
+  evidence_needed/expected_question/risk_flags) + `strengths` + 五维 `dimensions` + `jd_fit` + `summary`。
+- **详细保存可召回**（用户需求）：`persist=True` 经 `memory/resume.py` 把整条诊断作为**单个 chunk**
+  写入 `chunks(kb_scope='local', origin='resume_diagnosis')`——正文=`search_text()` 供 FTS/子串命中，
+  完整 JSON 存 `metadata.resume_diagnosis`。`recall_resume_diagnoses(query)` / `latest_resume_diagnosis()`
+  从 metadata **重建完整对象**（召回的是整条诊断，不是片段）。
+- **只读边界**：仍不碰只读不变量守护的状态表（mastery/events/paths/diagnosis_reports）；保存只写
+  记忆库 chunks（与 daily 记忆同构，不属 Manager 唯一写者范畴）。`run()` 弱点诊断路径完全未动。
+
 ## 运行时 & 触发
 
 - ReAct 3 步只读循环（`react/loop.py` + `_DIAG_TOOLS`）：拉事件 → 算有效掌握 → 聚簇。

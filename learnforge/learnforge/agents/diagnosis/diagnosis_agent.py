@@ -20,8 +20,10 @@ from ...contracts.agents.diagnosis import (
     Cluster,
     DiagnosisInput,
     DiagnosisResult,
+    ResumeDiagnosis,
     WeakAtom,
 )
+from ...contracts.agents.mock import InterviewContext
 from ...contracts.enums import AgentId, EventType
 from ...llm.client import LLM
 from ...mcp import tools as _toolmod
@@ -201,6 +203,73 @@ class DiagnosisAgent(BaseAgent):
         self.last_react_trace = [s.as_dict() for s in trace]
         return DiagnosisResult(weak_atoms=weak_atoms, clusters=clusters,
                                recommendations=recommendations, confidence=confidence)
+
+    # ------------------------------------------------ 简历问题诊断（resume review）
+    def diagnose_resume(
+        self,
+        resume_text: str,
+        context: Optional[InterviewContext] = None,
+        persist: bool = True,
+    ) -> ResumeDiagnosis:
+        """诊断简历可能存在的问题，返回详细 ResumeDiagnosis；persist=True 则存记忆供召回。
+
+        只读学习状态（mastery/paths/events 一律不碰）；保存仅写记忆库 chunks(local)，
+        不破坏 DiagnosisAgent 只读不变量（其守护的状态表不受影响）。
+        无 key → 确定性规则兜底；有 key → LLM 增强后合并。
+        """
+        from .resume import analyze_resume_rules
+
+        ctx = context or InterviewContext()
+        base = analyze_resume_rules(resume_text or "", ctx)  # 确定性基线（链路永远通）
+        result = base
+
+        if LLM.available and (resume_text or "").strip():
+            sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
+            if sk is not None:
+                prev = self.skill
+                self.skill = sk
+                try:
+                    out = self.llm_structured(
+                        self._resume_prompt(resume_text, ctx, base),
+                        ResumeDiagnosis,
+                        max_tokens=1800,
+                    )
+                finally:
+                    self.skill = prev
+                if out is not None and out.issues:
+                    # LLM 主导，但回填角色上下文与摘录，并保留确定性兜底的亮点。
+                    out.target_role = out.target_role or ctx.target_role
+                    out.role_type = out.role_type or base.role_type
+                    out.resume_digest = out.resume_digest or base.resume_digest
+                    if not out.strengths:
+                        out.strengths = base.strengths
+                    result = out
+
+        if persist:
+            try:
+                from ...memory.resume import save_resume_diagnosis
+
+                save_resume_diagnosis(result, db_path=self._db_path)
+            except Exception:  # noqa: BLE001 - 保存失败不阻断诊断返回（best-effort）
+                pass
+        return result
+
+    @staticmethod
+    def _resume_prompt(resume_text: str, ctx: InterviewContext, base: ResumeDiagnosis) -> str:
+        anchors = "\n".join(
+            f"- [{i.category.value}/{i.severity.value}] {i.excerpt}" for i in base.issues[:8]
+        ) or "（规则层未发现明显风险，请你独立复核）"
+        role = ctx.target_role or "未指定"
+        jd = (ctx.jd_text or "").strip()
+        jd_line = f"\n目标 JD：{jd[:600]}" if jd else ""
+        return (
+            f"诊断下面这份简历可能存在的问题。目标岗位：{role}。{jd_line}\n"
+            f"规则层已标记的风险锚点（可采纳/修正/补充，勿照抄）：\n{anchors}\n\n"
+            f"简历正文：\n{(resume_text or '').strip()[:4000]}\n\n"
+            "逐条经历审阅，产出 ResumeDiagnosis：每条 issue 必引简历原句作 excerpt，"
+            "给 problem/suggestion/evidence_needed/expected_question；并给 strengths、五维 dimensions、"
+            "jd_fit 与 summary。强 claim 无证据要标为高风险并给降级写法，不要奖励夸大。"
+        )
 
     # ----------------------------------------------------------- 段① events
     def _act_load_events(self, payload: DiagnosisInput, trace: List[_ReActStep]) -> List[dict]:

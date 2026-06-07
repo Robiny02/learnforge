@@ -9,7 +9,7 @@ Phase 3 定义：Mock 子 agent(Interviewer/Judge/Strategist/Coach) 与 Diagnosi
 
 from __future__ import annotations
 
-from ...contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult
+from ...contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult, ResumeDiagnosis
 from ...contracts.agents.mock import (
     CoachInput,
     CoachReport,
@@ -631,6 +631,60 @@ DIAGNOSIS_SKILL = SkillSpec(
 )
 
 
+# --- Resume Diagnosis（简历问题诊断，蒸馏自 llm-intern-skill；只读产出，存记忆可召回）---
+RESUME_DIAGNOSIS_SKILL = SkillSpec(
+    name="diagnosis.resume.v1",
+    agent_id=AgentId.DIAGNOSIS,
+    model_tier=ModelTier.SONNET,
+    frontmatter=_front("diagnosis.resume.v1", "resume_diagnosis_subagent",
+                       "Diagnose resume problems without writing learner state."),
+    system_prompt=(
+        "你是资深技术面试官 + 简历审阅师（接入 llm-intern-skill 的 truth-boundary / evidence-contract）。"
+        "只诊断简历问题，不润色、不编造经历、不改任何学习状态。\n"
+        "核心原则：强 claim 必须有证据；识别夸大而非奖励夸大；先诊断后改写。逐条经历判断："
+        "是否夸大(主导/上线/显著提升却无量化)、是否无证据(声称做过却给不出产物/数据)、"
+        "是否含糊(撑不住追问)、是否与目标岗位硬要求对齐。\n"
+        "每条问题给：原句 excerpt、为何站不住 problem、更安全的降级写法 suggestion、"
+        "该补的证据 evidence_needed、最可能招致的追问 expected_question。"
+        "输出 ResumeDiagnosis（issues + strengths + 五维评分 dimensions + JD 匹配 jd_fit + summary）。"
+    ),
+    allowed_tools=["llm.complete_structured", "retrieval.search"],
+    tool_descriptions={
+        "llm.complete_structured": "Sonnet structured resume-issue diagnosis.",
+        "retrieval.search": "Read the uploaded resume/JD material if needed.",
+    },
+    subskill_descriptions={},
+    bash=NO_BASH,
+    workflow=["split_claims", "flag_risks", "categorize_and_downgrade", "score_and_verdict"],
+    progressive_sections={
+        "sop": (
+            "简历诊断 SOP（逐条执行）：\n"
+            "1. 把简历拆成逐条经历/claim；标题、空泛口号不算可评估条目。\n"
+            "2. 每条判风险：夸大(risky_language)、无证据(evidence_gap/unsupported_claim)、"
+            "含糊(weak_phrasing)、易被问穿(interview_vulnerability)。\n"
+            "3. 高风险（夸大+无证据）优先；excerpt 必须引简历原句，problem 说清会被怎么追问。\n"
+            "4. suggestion 给可直接替换的降级写法（只讲真实做过的）；evidence_needed 列该补的产物/指标。\n"
+            "5. 五维评分(0-5) + jd_fit(risky/medium/strong)；strengths 只收有证据的硬经历。\n\n"
+            "few-shot（学颗粒度）：\n"
+            "  简历原句：『主导上线企业级 RAG 系统，准确率显著提升』\n"
+            "  ✓ issue：category=risky_language, severity=high,\n"
+            "    problem='主导/上线/显著提升三连，无量化与产物，面试官会直接要数字与你负责的边界',\n"
+            "    suggestion='改为：参与文档问答 RAG 的召回模块，在固定样例集上观察到引用准确率改善',\n"
+            "    evidence_needed=['提升前后的量化对比','你负责模块的明确边界','可展示的 demo/代码'],\n"
+            "    expected_question='提升前后具体多少？谁主导？有无评估集与 bad case？'"
+        )
+    },
+    constraints=[
+        "Strictly read-only on learner state (mastery/paths/events).",
+        "Diagnose, do not rewrite the resume or invent experience.",
+        "Every issue excerpt must quote the resume; strong claims need evidence.",
+    ],
+    input_schema=None,
+    output_schema=ResumeDiagnosis,
+    steps=["split_claims", "flag_risks", "categorize", "score"],
+)
+
+
 _ALL = [
     MANAGER_SKILL,
     QA_SKILL,
@@ -645,6 +699,7 @@ _ALL = [
     STRATEGIST_SKILL,
     COACH_SKILL,
     DIAGNOSIS_SKILL,
+    RESUME_DIAGNOSIS_SKILL,
 ]
 
 

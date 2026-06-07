@@ -176,3 +176,37 @@ class ModelTier(str, Enum):
 
     HAIKU = "haiku"
     SONNET = "sonnet"
+
+
+class ResumeIssueCategory(str, Enum):
+    """简历问题分类（蒸馏自 llm-intern-skill 的 resume review）。
+
+    - UNSUPPORTED_CLAIM：声称做过但无证据支撑的论断。
+    - WEAK_PHRASING：技术表达含糊/不精确，撑不住追问。
+    - RISKY_LANGUAGE：夸大/结果性措辞（主导/上线/显著提升），易被问穿。
+    - EVIDENCE_GAP：缺少能力佐证（指标/数据/对比/产物）。
+    - INTERVIEW_VULNERABILITY：最容易在面试中被攻破的薄弱点。
+    """
+
+    UNSUPPORTED_CLAIM = "unsupported_claim"
+    WEAK_PHRASING = "weak_phrasing"
+    RISKY_LANGUAGE = "risky_language"
+    EVIDENCE_GAP = "evidence_gap"
+    INTERVIEW_VULNERABILITY = "interview_vulnerability"
+
+
+class IssueSeverity(str, Enum):
+    """简历问题严重度。"""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class JDFitVerdict(str, Enum):
+    """简历与目标岗位的匹配判定（llm-intern-skill: JD Fit Verdict）。"""
+
+    RISKY = "risky"
+    MEDIUM = "medium"
+    STRONG = "strong"
+    UNKNOWN = "unknown"
