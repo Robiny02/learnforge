@@ -12,7 +12,15 @@
 from __future__ import annotations
 
 from learnforge.agents.diagnosis import DiagnosisAgent
-from learnforge.agents.diagnosis.resume import analyze_resume_rules, split_claims
+from learnforge.agents.diagnosis.resume import (
+    analyze_resume_rules,
+    load_resume_text,
+    looks_like_resume_request,
+    split_claims,
+)
+from learnforge.knowledge.ingest import ingest_document
+from learnforge.orchestration.manager import ManagerAgent
+from learnforge.contracts.enums import Status
 from learnforge.contracts.agents.diagnosis import ResumeDiagnosis, ResumeIssue
 from learnforge.contracts.agents.mock import InterviewContext
 from learnforge.contracts.enums import (
@@ -174,3 +182,60 @@ def test_diagnose_resume_llm_path_uses_sop_and_adopts_output(tmp_db, monkeypatch
     assert "风险锚点" in prompt and "主导上线企业级 RAG 系统" in prompt
     # 持久化后可完整召回
     assert recall_resume_diagnoses(query="RAG", db_path=tmp_db)[0].summary == "LLM-SUMMARY"
+
+
+# --------------------------------------------------------------------------- #
+# 路由：从自然语言/附件自动进入简历诊断
+# --------------------------------------------------------------------------- #
+def test_looks_like_resume_request():
+    assert looks_like_resume_request("诊断一下我的简历有什么问题")
+    assert looks_like_resume_request("review my resume / CV")
+    assert not looks_like_resume_request("我哪里比较薄弱")
+
+
+def _ingest_resume_attachment(db, text, filename="我的简历.pdf", session_id="s1"):
+    ingest_document(
+        text=text, source_type="doc", topic="resume", kb_scope="local",
+        metadata={"origin": "attachment", "document_id": "doc-1", "filename": filename,
+                  "attachment_kind": "pdf", "session_id": session_id},
+        db_path=db, embed=False,
+    )
+
+
+def test_load_resume_text_reconstructs_from_attachment(tmp_db):
+    _ingest_resume_attachment(tmp_db, _RESUME)
+    # 再放一个非简历附件，确认按文件名优先挑出简历
+    ingest_document(text="一些无关笔记内容用于干扰", source_type="doc", kb_scope="local",
+                    metadata={"origin": "attachment", "document_id": "doc-2",
+                              "filename": "notes.txt", "attachment_kind": "text"},
+                    db_path=tmp_db, embed=False)
+    text = load_resume_text(db_path=tmp_db, session_id="s1")
+    assert "RAG" in text and "NDCG" in text
+    assert "无关笔记" not in text       # 选了简历文档，不是干扰附件
+
+
+def test_manager_routes_resume_request_with_attachment(tmp_db):
+    _ingest_resume_attachment(tmp_db, _RESUME)
+    mgr = ManagerAgent(db_path=tmp_db)
+    resp = mgr._dispatch_impl("diagnosis", "诊断我的简历有什么问题", {"session_id": "s1"})
+    assert resp.status == Status.OK
+    assert resp.result["kind"] == "resume_diagnosis"
+    # 夸大句被识别（换行被附件入库压成空格后仍能切条）
+    cats = {i["category"] for i in resp.result["issues"]}
+    assert ResumeIssueCategory.RISKY_LANGUAGE.value in cats
+    # 已落记忆可召回
+    assert recall_resume_diagnoses(query="RAG", db_path=tmp_db)
+
+
+def test_manager_weakness_diagnosis_not_hijacked_by_resume_route(tmp_db):
+    # 普通弱点诊断不应误入简历分支（无"简历"线索）
+    mgr = ManagerAgent(db_path=tmp_db)
+    resp = mgr._dispatch_impl("diagnosis", "我哪里比较薄弱", {})
+    assert resp.result.get("kind") != "resume_diagnosis"
+
+
+def test_manager_resume_request_without_resume_needs_input(tmp_db):
+    mgr = ManagerAgent(db_path=tmp_db)
+    resp = mgr._dispatch_impl("diagnosis", "诊断我的简历", {})
+    assert resp.status == Status.NEEDS_INPUT
+    assert "简历" in resp.result.get("message", "")

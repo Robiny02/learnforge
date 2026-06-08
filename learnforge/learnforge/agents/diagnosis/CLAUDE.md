@@ -29,6 +29,11 @@
   从 metadata **重建完整对象**（召回的是整条诊断，不是片段）。
 - **只读边界**：仍不碰只读不变量守护的状态表（mastery/events/paths/diagnosis_reports）；保存只写
   记忆库 chunks（与 daily 记忆同构，不属 Manager 唯一写者范畴）。`run()` 弱点诊断路径完全未动。
+- **路由**：dispatch 把「简历/resume/cv」并入 `diagnosis` 能力；`Manager._dispatch_resume_diagnosis`
+  在非 composite + 命中简历线索时分流到 `diagnose_resume`，简历全文来源 = context.resume_text >
+  `resume.load_resume_text()`（从上传附件 `origin=attachment` 的 local chunks 按 document 重建全文，
+  附件入库会把换行压成空格，故 `split_claims` 额外按句末标点 + 简历动词引导词重新切条）> resume_claims；
+  全空 → `NEEDS_INPUT` 提示上传。结果带 `kind=resume_diagnosis`，不灌入供 planning 消费的 diagnosis 槽。
 
 ## 运行时 & 触发
 

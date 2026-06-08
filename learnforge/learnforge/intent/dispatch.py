@@ -33,7 +33,8 @@ _CAPS = ("qa", "planning", "diagnosis", "mock", "note")
 _CAP_KEYWORDS: Dict[str, tuple] = {
     "mock": ("面试", "mock", "模拟面试", "模拟", "刷题", "出题", "interview", "practice",
              "考我", "考考我", "面试我", "面我"),
-    "diagnosis": ("诊断", "弱点", "薄弱", "复盘", "短板", "diagnose", "weakness", "assess"),
+    "diagnosis": ("诊断", "弱点", "薄弱", "复盘", "短板", "diagnose", "weakness", "assess",
+                  "简历", "履历", "resume", "cv"),
     "planning": ("计划", "规划", "学习路径", "路线", "安排", "路径", "plan", "roadmap", "schedule"),
 }
 # 复合"准备面试"线索 → 多意图（diagnosis 先行、planning 后继，见 §5.6）。

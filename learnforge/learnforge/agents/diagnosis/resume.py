@@ -24,6 +24,17 @@ from ...contracts.enums import (
 )
 from ..mock import interview_skill as IS
 
+# 简历意图关键词（用户文本里出现即认为想诊断简历，而非弱点）。
+_RESUME_CUES = ("简历", "履历", "resume", "cv", "résumé")
+# 文件名像简历的线索（自动从附件挑出简历文档）。
+_RESUME_FILENAME_CUES = ("简历", "履历", "resume", "cv", "résumé")
+
+
+def looks_like_resume_request(text: Optional[str]) -> bool:
+    """用户文本是否在要求诊断简历（区别于学习弱点诊断）。"""
+    low = (text or "").lower()
+    return any(cue in low for cue in _RESUME_CUES)
+
 # 风险标签 → (问题分类, 严重度)。
 _FLAG_TO_CATEGORY = {
     "overclaim": (ResumeIssueCategory.RISKY_LANGUAGE, IssueSeverity.HIGH),
@@ -34,10 +45,23 @@ _MIN_CLAIM_LEN = 6   # 过短的行（标题/分隔）不当 claim
 _MAX_ISSUES = 12
 
 
+# 简历条目常见的「动词引导词」——用于在换行被压成空格后重新切条（附件入库会归一化空白）。
+_LEADER_VERBS = ("主导", "负责", "参与", "实现", "完成", "优化", "搭建", "设计", "开发",
+                 "独立", "基于", "使用", "采用", "通过", "构建", "研究", "训练", "部署", "提升")
+_LEADER_RE = re.compile(r"\s+(?=(?:" + "|".join(_LEADER_VERBS) + r"))")
+_SENT_RE = re.compile(r"[。！？；;!?]+")
+
+
 def split_claims(resume_text: str) -> List[str]:
-    """把简历正文拆成逐条 claim：按行 + 项目符号切，去标题/空行/过短行。"""
+    """把简历正文拆成逐条 claim。
+
+    对附件入库后**换行被压成空格**的文本鲁棒：先按句末标点切，再在「空格 + 简历动词引导词」
+    处补切，避免多条经历并成一行后、某条的证据把另一条的夸大"洗白"。再去标题/空行/过短行。
+    """
+    text = _SENT_RE.sub("\n", resume_text or "")
+    text = _LEADER_RE.sub("\n", text)
     claims: List[str] = []
-    for raw in (resume_text or "").splitlines():
+    for raw in text.splitlines():
         line = re.sub(r"^\s*([-*•·▪◦]|\d+[.)、])\s*", "", raw).strip()
         # 跳过疑似栏目标题（无句意的短词、纯大写段名）。
         if len(line) < _MIN_CLAIM_LEN:
@@ -179,6 +203,55 @@ def _verdict(issues: List[ResumeIssue], claims: List[str]) -> JDFitVerdict:
     if high >= 1 or ratio >= 0.25:
         return JDFitVerdict.MEDIUM
     return JDFitVerdict.STRONG
+
+
+def load_resume_text(
+    db_path: Optional[str] = None, session_id: Optional[str] = None, max_chars: int = 8000
+) -> str:
+    """从上传附件（local chunks, origin=attachment）重建一份简历全文。
+
+    优先文件名像简历的文档；否则取最近的文本附件。按 document_id 聚合、chunk_index 还原顺序，
+    拼回整篇（不是片段）。无附件/失败 → 空串（调用方据此提示上传）。
+    """
+    from ...storage.repositories import ChunkRepository
+
+    try:
+        conn = ChunkRepository(db_path=db_path).conn
+        rows = conn.execute(
+            "SELECT chunk_id, text, "
+            "json_extract(metadata,'$.document_id') AS doc, "
+            "json_extract(metadata,'$.filename') AS fname, "
+            "json_extract(metadata,'$.attachment_kind') AS akind, "
+            "json_extract(metadata,'$.session_id') AS sess, "
+            "COALESCE(json_extract(metadata,'$.chunk_index'),0) AS cidx, "
+            "created_at "
+            "FROM chunks WHERE kb_scope='local' "
+            "AND json_extract(metadata,'$.origin')='attachment'",
+        ).fetchall()
+    except Exception:
+        return ""
+    # 只要文本类附件（排除图片）。
+    docs: dict = {}
+    for r in rows:
+        if (r["akind"] or "") == "image":
+            continue
+        doc = r["doc"] or r["chunk_id"]
+        d = docs.setdefault(doc, {"fname": r["fname"] or "", "sess": r["sess"],
+                                  "created_at": r["created_at"] or "", "pieces": []})
+        d["pieces"].append((r["cidx"], r["text"] or ""))
+    if not docs:
+        return ""
+
+    def _score(item) -> tuple:
+        doc_id, d = item
+        fname_low = (d["fname"] or "").lower()
+        name_hit = any(c in fname_low for c in _RESUME_FILENAME_CUES)
+        sess_hit = bool(session_id) and d["sess"] == session_id
+        return (name_hit, sess_hit, d["created_at"])  # 文件名像简历 > 同会话 > 最近
+
+    best_id, best = max(docs.items(), key=_score)
+    pieces = sorted(best["pieces"], key=lambda p: (p[0] if isinstance(p[0], int) else 0))
+    return "\n".join(t for _, t in pieces).strip()[:max_chars]
 
 
 def _summarize(

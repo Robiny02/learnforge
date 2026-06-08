@@ -147,6 +147,11 @@ class ManagerAgent(BaseAgent):
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
                                    result=out.model_dump(), cost_usd=self.qa.last_cost_usd)
         if agent == "diagnosis":
+            # 简历诊断子路由（用户单独要求诊断简历时）：与学习弱点诊断区分开。
+            # 复合"准备面试"仍走弱点诊断（trigger=composite），不在此分流。
+            from ..agents.diagnosis.resume import looks_like_resume_request
+            if not context.get("composite") and looks_like_resume_request(user_input):
+                return self._dispatch_resume_diagnosis(user_input, context)
             trigger = DiagnosisTrigger.COMPOSITE if context.get("composite") else DiagnosisTrigger.USER
             out = self.diagnosis.run(DiagnosisInput(time_window=TimeWindow.D30, trigger=trigger))
             self._persist_diagnosis(out.model_dump(), TimeWindow.D30.value, trigger.value,
@@ -187,6 +192,34 @@ class ManagerAgent(BaseAgent):
         return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
                                error={"code": "unknown_agent", "message": agent})
 
+    def _dispatch_resume_diagnosis(self, user_input: str, context: Dict[str, Any]) -> ResponsePayload:
+        """诊断简历问题：取简历全文（context 显式 > 上传附件）→ DiagnosisAgent.diagnose_resume。
+
+        简历来源全空 → NEEDS_INPUT 提示上传，不硬凑。诊断结果已在 diagnose_resume 内存记忆可召回；
+        这里不写 diagnosis_reports（那是弱点诊断的 schema），结果用 kind 标注避免与弱点结论混淆。
+        """
+        ic = context.get("interview_context")
+        ctx = InterviewContext(**ic) if isinstance(ic, dict) else (ic or InterviewContext())
+        # 简历文本来源：context 显式传入 > 自动从上传附件重建 > resume_claims 兜底。
+        resume_text = str(context.get("resume_text") or "").strip()
+        if not resume_text:
+            from ..agents.diagnosis.resume import load_resume_text
+            resume_text = load_resume_text(db_path=self._db_path,
+                                           session_id=context.get("session_id"))
+        if not resume_text and ctx.resume_claims:
+            resume_text = "\n".join(ctx.resume_claims)
+        if not resume_text:
+            return ResponsePayload(
+                status=Status.NEEDS_INPUT, confidence=0.0,
+                result={"kind": "resume_diagnosis",
+                        "message": "未找到简历内容。请上传简历文件（PDF/MD/TXT）或直接粘贴简历正文后再诊断。"},
+            )
+        diag = self.diagnosis.diagnose_resume(resume_text, ctx, persist=True)
+        result = diag.model_dump()
+        result["kind"] = "resume_diagnosis"  # 判别标签：与弱点 DiagnosisResult 区分
+        return ResponsePayload(status=Status.OK, confidence=diag.confidence,
+                               result=result, cost_usd=self.diagnosis.last_cost_usd)
+
     @staticmethod
     def _enrich_mock_from_intent(mi: MockInput, user_input: str) -> None:
         """从自然语言抽取面试槽位填进 MockInput（岗位/JD/简历 → context；难度/轮次）。
@@ -216,7 +249,9 @@ class ManagerAgent(BaseAgent):
             meta["handoff_summary"] = env.handoff_summary
 
         if agent == "diagnosis" and resp.status == Status.OK:
-            context["diagnosis"] = resp.result
+            # 简历诊断结果 shape 不同（kind=resume_diagnosis），不灌进供 planning 消费的 diagnosis 槽。
+            if resp.result.get("kind") != "resume_diagnosis":
+                context["diagnosis"] = resp.result
         if agent == "planning" and resp.status == Status.OK:
             # 唯一写者：把 PlanningAgent 的增量 diff 落库 + emit PATH_CHANGED（§2a/§3.7/§4c）。
             committed_path = self._commit_planning_result(resp.result, context, trace_id)
