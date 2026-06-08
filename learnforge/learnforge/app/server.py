@@ -246,6 +246,11 @@ def _qa_with_attachments(text: str, atts, session_id: str) -> dict:
     manifest = ingest_attachments(atts, session_id=session_id, db_path=mgr._db_path)
     # 2) 当前轮仍按 ChatGPT 方式作答：文本进证据、图片走 vision（不破坏现有多模态 QA）。
     flat = flatten_attachments(atts)
+    # 2a) 简历诊断快捷路径：上传简历 + 同条问"诊断我的简历"→ 直接走简历诊断（用原始附件文本，
+    #     保留换行比从 chunks 重建更准）；否则按常规多模态 QA 作答。
+    from ..agents.diagnosis.resume import looks_like_resume_request
+    if looks_like_resume_request(text) and (flat.text or "").strip():
+        return _resume_diagnosis_response(text, flat.text, session_id, manifest)
     q = text or "请阅读/查看我上传的附件，并解答或说明其要点。"
     out = mgr.qa.run(QAInput(question=q, attachment_text=flat.text, image_data_urls=flat.images))
     note = ""
@@ -269,6 +274,58 @@ def _qa_with_attachments(text: str, atts, session_id: str) -> dict:
     }
     mgr.record_turn(session_id, q, out.answer)
     return body
+
+
+def _render_resume_diagnosis(diag) -> str:
+    """把 ResumeDiagnosis 渲染成前端可读的 Markdown 复盘。"""
+    lines = [f"## 简历诊断（JD 匹配：{diag.jd_fit.value}）", "", diag.summary, ""]
+    d = diag.dimensions
+    lines += [
+        f"**五维评分**：真实性 {d.truth_boundary}/5 · 证据 {d.evidence_contract}/5 · "
+        f"表达 {d.technical_expression}/5 · 抗追问 {d.interviewability}/5 · JD 对齐 {d.jd_alignment}/5",
+        "",
+    ]
+    if diag.issues:
+        lines.append("### 风险点")
+        for i, it in enumerate(diag.issues, 1):
+            lines += [
+                f"{i}. **[{it.category.value}/{it.severity.value}]** {it.excerpt}",
+                f"   - 问题：{it.problem}",
+                f"   - 改写：{it.suggestion}" if it.suggestion else "",
+                f"   - 需补证据：{('；'.join(it.evidence_needed))}" if it.evidence_needed else "",
+                f"   - 预期追问：{it.expected_question}" if it.expected_question else "",
+            ]
+    if diag.strengths:
+        lines += ["", "### 可作为硬亮点"] + [f"- {s}" for s in diag.strengths]
+    return "\n".join(x for x in lines if x is not None)
+
+
+def _resume_diagnosis_response(text: str, resume_text: str, session_id: str, manifest) -> dict:
+    """简历诊断响应（同条上传简历 + 提问的快捷路径）。结果已存记忆可后续召回。"""
+    import re
+
+    from ..contracts.agents.mock import InterviewContext
+
+    # 剥掉 flatten 注入的「【附件：xxx】」头行，避免被当成简历 claim。
+    cleaned = re.sub(r"(?m)^【附件：.*?】\s*$", "", resume_text or "").strip()
+    mgr = _mgr()
+    diag = mgr.diagnosis.diagnose_resume(cleaned or resume_text, InterviewContext(), persist=True)
+    reply = _render_resume_diagnosis(diag)
+    mgr.record_turn(session_id, text or "诊断我的简历", reply)
+    return {
+        "reply_text": reply,
+        "citations": [],
+        "next_actions": ["针对高风险点先降级表达并补证据", "再开一场 mock 检验能否抗追问"],
+        "status": Status.OK.value,
+        "image_url": "",
+        "image_spec": None,
+        "plan": [{"agent": "diagnosis", "task_type": "resume_diagnosis",
+                  "issues": len(diag.issues)}],
+        "replan_count": 0,
+        "trace_id": f"t-{session_id}",
+        "documents": [d.model_dump() for d in manifest.documents],
+        "manifest": manifest.manifest_line(),
+    }
 
 
 def _extract_mock_topic(text: str) -> str:
