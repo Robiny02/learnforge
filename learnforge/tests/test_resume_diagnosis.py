@@ -239,3 +239,34 @@ def test_manager_resume_request_without_resume_needs_input(tmp_db):
     resp = mgr._dispatch_impl("diagnosis", "诊断我的简历", {})
     assert resp.status == Status.NEEDS_INPUT
     assert "简历" in resp.result.get("message", "")
+
+
+# --------------------------------------------------------------------------- #
+# PDF 乱码检测（字体子集/无 ToUnicode）→ 诚实降级，不在垃圾上诊断
+# --------------------------------------------------------------------------- #
+def test_garbled_pdf_text_is_detected():
+    from learnforge.multimodal.parse import _looks_garbled
+
+    # 真实样本：pypdf 把子集字体中文映射成随机文字系统的字符
+    garbled = ("Ⴏད:273915397@qq.com ߅׈:č+1Ď447-902-7594 ؿagent ऊაື၂ཿೆb "
+               "ၫაഈ༯໓ᇍ৘ğݖ Ⴟ Redis LuaؓIPၩ ކࢲRocketMQᇅੲఖაॢ")
+    assert _looks_garbled(garbled)
+    # 正常中英文简历不应误判
+    good = "主导上线企业级 RAG 系统，准确率显著提升\n负责文档问答模块，基于 NDCG@10 评估"
+    assert not _looks_garbled(good)
+    assert not _looks_garbled("short")  # 过短不判
+
+
+def test_resume_ui_path_honest_when_text_unusable(tmp_db, monkeypatch):
+    # 模拟 PDF 抽取乱码：附件 extracted_text 为空 + degraded → 诚实提示，不输出乱码诊断
+    import learnforge.app.server as srv
+    from learnforge.contracts.attachment import Attachment, AttachmentManifest
+
+    monkeypatch.setattr(srv, "_mgr", lambda: ManagerAgent(db_path=tmp_db))
+    att = Attachment(id="a1", kind="pdf", filename="简历.pdf",
+                     degraded=True, note="PDF 文本提取为乱码(字体子集/无 ToUnicode 映射)")
+    manifest = AttachmentManifest(documents=[])
+    resp = srv._resume_diagnosis_response("诊断我的简历", "", "u1", manifest, [att])
+    assert resp["status"] == Status.NEEDS_INPUT.value
+    assert "乱码" in resp["reply_text"] or "提取到可用文本" in resp["reply_text"]
+    assert ".md" in resp["reply_text"]  # 指引改用文本版

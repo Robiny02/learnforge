@@ -125,10 +125,43 @@ def _parse_pdf(att: Attachment, raw: bytes) -> None:
         except Exception:  # noqa: BLE001 - 单页失败跳过
             continue
     text = "\n".join(p for p in parts if p.strip())
+    # 子集字体 + 缺 ToUnicode 的 PDF：pypdf 会把中文映射成随机文字系统的乱码字符。
+    # 在乱码上做任何分析都无意义 → 当作"无可用文本"降级，提示改用文本版。
+    if _looks_garbled(text):
+        att.degraded = True
+        att.note = ("PDF 文本提取为乱码(字体子集/无 ToUnicode 映射)，无法可靠解析。"
+                    "请改用 .md/.txt 或导出文本版简历，或直接粘贴正文。")
+        return
     att.extracted_text, att.truncated = _budget(text)
     if not att.extracted_text:
         att.degraded = True
         att.note = "PDF 抽取为空(可能是扫描件，后续可渲染页图走 vision)"
+
+
+def _looks_garbled(text: str) -> bool:
+    """检测 PDF 抽取乱码：大量字符落在简历不会用到的'冷门文字系统'区段。
+
+    允许 ASCII/拉丁、常用中文(CJK 统一表意)、CJK/全角标点、常见符号；其余(格鲁吉亚/僧伽罗/
+    藏文/泰米尔/天城文…)占比过高即判乱码。正常中英文简历 bad 占比极低。
+    """
+    s = (text or "").strip()
+    if len(s) < 20:
+        return False
+    bad = total = 0
+    for ch in s:
+        if ch.isspace():
+            continue
+        total += 1
+        o = ord(ch)
+        if (o < 0x300                          # 基本拉丁 + 拉丁补充
+                or 0x4E00 <= o <= 0x9FFF       # CJK 统一表意（常用汉字）
+                or 0x3000 <= o <= 0x303F       # CJK 标点
+                or 0xFF00 <= o <= 0xFFEF       # 全角
+                or 0x2000 <= o <= 0x206F       # 常用标点
+                or 0x2100 <= o <= 0x21FF):     # 字母符号/箭头
+            continue
+        bad += 1
+    return total > 0 and (bad / total) > 0.25
 
 
 # ----------------------------------------------------------------- 预算
