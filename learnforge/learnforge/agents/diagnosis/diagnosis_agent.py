@@ -236,7 +236,7 @@ class DiagnosisAgent(BaseAgent):
                     out = self.llm_structured(
                         self._resume_prompt(resume_text, ctx, base, evidence),
                         ResumeDiagnosis,
-                        max_tokens=4096,
+                        max_tokens=8000,  # 项目级输出较大，4096 会截断（模型把整篇塞进一个字段时尤甚）
                         timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
                         # 用快模型做结构化简历分析：慢推理模型(如 claude-sonnet-4.6 带思考)单次要~2min，
                         # 破前端超时；gpt-4o 又快又强，深度足够。可经 LF_RESUME_MODEL 覆盖。
@@ -317,7 +317,11 @@ class DiagnosisAgent(BaseAgent):
             "3) 顶层给 overall_verdict（总体判断）、top_highlights（真正能打的亮点）、most_dangerous（最危险表述）、"
             "rewritten_bullets（可直接替换进简历的改写，逐条 原句→改写）、jd_fit、summary。\n"
             "原则：只有在指出『哪个 claim 缺什么证据、去哪个文件/测试/trace 找、能支撑什么表达』之后，"
-            "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。"
+            "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。\n"
+            "【格式硬约束，必须遵守】overall_verdict 与 summary 各 ≤3 句，**不要把整篇报告写进任何单个字段**；"
+            "逐条分析一律放进结构化 packets，不要在 overall_verdict 里写『各条点评 ①②③』。"
+            "只挖最重要的 4-6 条项目/实习 bullet（packets ≤6）；每个 packet 的每个字段简短"
+            "（列表项 ≤3 条、每句精炼），保证整体 JSON 完整不被截断。"
         )
 
     # ----------------------------------------------------------- 段① events
