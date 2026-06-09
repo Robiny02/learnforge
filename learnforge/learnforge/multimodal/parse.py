@@ -193,7 +193,7 @@ def _ocr_pdf_via_vision(raw: bytes, filename: str = "") -> str:
                 "用纯文本/Markdown 输出，按阅读顺序排列。"
             ),
             model_tier=ModelTier.SONNET,
-            max_tokens=4000,
+            max_tokens=8000,  # 整页简历逐字输出，4000 会把后半截断（"只读了一半"）
             images=data_urls,
         )
         return (res.text or "").strip()

@@ -81,6 +81,23 @@ def test_rules_flag_overclaim_and_reward_evidence():
     assert d.jd_fit == JDFitVerdict.RISKY
 
 
+def test_rules_skip_personal_info_and_education(tmp_db):
+    # 联系方式/学历/日期/GPA 不应被当成简历风险；只评估真实经历/项目。
+    resume = (
+        "邮箱:273915397@qq.com\n电话:（+1）447-902-7594\n求职意向：后端开发+agent\n"
+        "伊利诺伊大学厄巴纳香槟分校\nGPA: 4.0/4.0\n2025-2027\n"
+        "主导上线企业级 RAG 系统，准确率显著提升\n"
+        "基于固定 query 集对比 BM25 与 rerank 的 NDCG@10，记录了 bad case"
+    )
+    d = analyze_resume_rules(resume, InterviewContext(target_role="后端+agent"))
+    flagged = " ".join(i.excerpt for i in d.issues)
+    assert "qq.com" not in flagged and "GPA" not in flagged and "伊利诺伊" not in flagged
+    assert "2025-2027" not in flagged
+    # 真实风险仍被抓（夸大句）；带证据的硬经历进 strengths
+    assert any(i.category == ResumeIssueCategory.RISKY_LANGUAGE for i in d.issues)
+    assert any("NDCG" in s for s in d.strengths)
+
+
 def test_rules_dimensions_and_verdict_scale_with_issues():
     clean = "基于固定样例集对比 baseline 的 NDCG@10 指标，记录了 bad case 与复盘"
     d = analyze_resume_rules(clean, InterviewContext(role_type="rag"))

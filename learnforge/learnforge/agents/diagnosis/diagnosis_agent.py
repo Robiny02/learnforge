@@ -229,10 +229,12 @@ class DiagnosisAgent(BaseAgent):
                 prev = self.skill
                 self.skill = sk
                 try:
+                    # ResumeDiagnosis 是大 schema（多条 issue×多字段），max_tokens 偏小会截断 JSON
+                    # → 解析失败 → 静默退回规则引擎（又浅又跑偏）。给足额度并对失败出声。
                     out = self.llm_structured(
                         self._resume_prompt(resume_text, ctx, base),
                         ResumeDiagnosis,
-                        max_tokens=1800,
+                        max_tokens=4096,
                     )
                 finally:
                     self.skill = prev
@@ -244,6 +246,14 @@ class DiagnosisAgent(BaseAgent):
                     if not out.strengths:
                         out.strengths = base.strengths
                     result = out
+                else:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Resume LLM diagnosis produced no usable output (resume_len=%d); "
+                        "falling back to the shallow rule engine. Likely JSON truncation or "
+                        "model/slug error — check LF_SONNET_MODEL.",
+                        len((resume_text or "")),
+                    )
 
         if persist:
             try:
@@ -265,10 +275,12 @@ class DiagnosisAgent(BaseAgent):
         return (
             f"诊断下面这份简历可能存在的问题。目标岗位：{role}。{jd_line}\n"
             f"规则层已标记的风险锚点（可采纳/修正/补充，勿照抄）：\n{anchors}\n\n"
-            f"简历正文：\n{(resume_text or '').strip()[:4000]}\n\n"
+            f"简历正文：\n{(resume_text or '').strip()[:6000]}\n\n"
+            "审阅重点放在**项目与实习经历**的深度，而非个人信息/学历/联系方式（这些不要当问题）。\n"
             "逐条经历审阅，产出 ResumeDiagnosis：每条 issue 必引简历原句作 excerpt，"
             "给 problem/suggestion/evidence_needed/expected_question；并给 strengths、五维 dimensions、"
             "jd_fit 与 summary。强 claim 无证据要标为高风险并给降级写法，不要奖励夸大。"
+            "针对项目要追问技术深度（架构取舍、指标口径、bad case、你负责的边界），不要泛泛而谈。"
         )
 
     # ----------------------------------------------------------- 段① events

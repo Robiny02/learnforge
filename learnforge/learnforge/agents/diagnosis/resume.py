@@ -72,6 +72,55 @@ def split_claims(resume_text: str) -> List[str]:
     return claims
 
 
+# 非经历行（联系方式/学历事实/栏目标题/链接/日期）——不评估为"风险"。
+_META_RE = re.compile(
+    r"[\w.\-]+@[\w.\-]+\.\w+|电话|邮[箱件]|phone|e-?mail|tel|微信|wechat|地址|address|"
+    r"github\.com|linkedin|gitee|https?://|"
+    r"绩点|雅思|托福|ielts|toefl|cet|四级|六级|"
+    r"求职意向|期望(岗位|薪资)|意向岗位|个人信息|联系方式|教育(背景|经历)?|荣誉|奖学金|证书",
+    re.IGNORECASE,
+)
+# GPA 单独用词边界匹配，避免命中正文里别的字。
+_GPA_RE = re.compile(r"\bgpa\b|绩点", re.IGNORECASE)
+_DATE_ONLY_RE = re.compile(r"^[\s\d年月./~\-—至今present]+$", re.IGNORECASE)
+_DEGREE_CUES = ("大学", "学院", "university", "college", "硕士", "本科", "学士", "博士", "专业")
+# 证据标记：量化数字/指标/产物词——有则视为有支撑。
+_NUM_RE = re.compile(r"\d+(\.\d+)?\s*(%|倍|万|亿|qps|ms|k\b|w\b|条|次|人|天|周|月)", re.IGNORECASE)
+# 注意：不要把"准确/召回"这类领域名词当证据——它们常出现在夸大句里（如"准确率显著提升"），
+# 真正的证据是量化数字(_NUM_RE)或具体佐证词。
+_EVIDENCE_MARKERS = ("指标", "数据", "日志", "对比", "实验", "ndcg", "mrr", "baseline",
+                     "样例", "case", "代码", "复现", "配置", "记录", "report",
+                     "压测", "基准", "p99", "p95", "覆盖率")
+
+
+def _is_meta_line(line: str) -> bool:
+    """是否为非经历行（联系方式/学历事实/栏目/日期/链接）——跳过，不当风险。"""
+    low = line.lower().strip()
+    if _META_RE.search(low) or _GPA_RE.search(low) or _DATE_ONLY_RE.match(line.strip()):
+        return True
+    # 纯学历事实行（含学校/学位且较短，无动作描述）。
+    if any(c in low for c in _DEGREE_CUES) and len(line) < 30:
+        return True
+    return False
+
+
+def _has_evidence(claim: str) -> bool:
+    low = claim.lower()
+    return bool(_NUM_RE.search(low)) or any(m in low for m in _EVIDENCE_MARKERS)
+
+
+def _resume_claim_risk(claim: str) -> List[str]:
+    """简历条目的风险（区别于面试回答）：只看夸大 + 行动声明无证据，不把"短"当含糊。"""
+    flags: List[str] = []
+    has_ev = _has_evidence(claim)
+    if any(t in claim for t in IS.OVERCLAIM_TERMS) and not has_ev:
+        flags.append("overclaim")
+    # 行动型声明（有动词引导词）却无任何量化/证据 → 证据缺失。
+    if any(v in claim for v in _LEADER_VERBS) and not has_ev and "overclaim" not in flags:
+        flags.append("no_evidence")
+    return flags
+
+
 def _expected_question(claim: str, flags: List[str], role_type: Optional[str]) -> str:
     """这条 claim 最可能招致的面试追问（证据式拷打口径）。"""
     if "overclaim" in flags:
@@ -101,13 +150,20 @@ def analyze_resume_rules(
     issues: List[ResumeIssue] = []
     strengths: List[str] = []
     for claim in claims:
-        flags = IS.risk_flags_for_answer(claim)
+        # 跳过联系方式/学历事实/栏目/日期等非经历行——它们不是简历"风险"。
+        if _is_meta_line(claim):
+            continue
+        # 只评估实质经历/项目条目（有动词引导词，或足够长的描述）。
+        is_experience = any(v in claim for v in _LEADER_VERBS) or len(claim) >= 16
+        if not is_experience:
+            continue
+        flags = _resume_claim_risk(claim)
         if not flags:
-            # 无风险且够具体 → 视为亮点（有证据词的硬经历）。
-            if len(claim) >= 12:
+            # 实质经历 + 有量化/证据 → 硬亮点。
+            if _has_evidence(claim):
                 strengths.append(claim)
             continue
-        # 取最严重的一个 flag 作为主分类（overclaim > no_evidence > vague 顺序）。
+        # 取最严重的一个 flag 作为主分类（overclaim > no_evidence）。
         primary = next((f for f in ("overclaim", "no_evidence", "vague") if f in flags), flags[0])
         category, severity = _FLAG_TO_CATEGORY.get(
             primary, (ResumeIssueCategory.WEAK_PHRASING, IssueSeverity.LOW)
