@@ -86,6 +86,30 @@ class ResumeDimensions(BaseModel):
     jd_alignment: int = Field(default=0, ge=0, le=5, description="与目标岗位硬要求的对齐度。")
 
 
+class SelectedFile(BaseModel):
+    """repo map 动态选中并读取的一个文件（可解释 + 为后续 evidence binding 打基础）。"""
+
+    path: str
+    role: str = Field(default="unknown", description="文件角色：doc/source/test/config/example/script/unknown。")
+    evidence_kind: str = Field(default="", description="证据类型：doc/code/test/config。")
+    score: float = Field(default=0.0, description="选择分数（越高越相关）。")
+    selected_reason: str = Field(default="", description="为什么选它（可解释）。")
+    expected_claims: List[str] = Field(
+        default_factory=list, description="预期它能支持的 claim token（选择时的依据）。"
+    )
+    # --- 读取后填（区分『读到』与『支持』；为 evidence binding 打基础）---
+    read_success: bool = Field(default=False, description="是否成功读到内容。")
+    matched_claims: List[str] = Field(
+        default_factory=list, description="文件内容里**实际**命中的 claim token（不只文件名）。"
+    )
+    extracted_facts: List[str] = Field(
+        default_factory=list, description="从内容里抽出的、含命中 token 的短证据片段。"
+    )
+    read_success_but_no_match: bool = Field(
+        default=False, description="读到了但内容未命中任何 claim → 不应据此判 support。"
+    )
+
+
 class ExternalSource(BaseModel):
     """一个被访问的外部链接及其读取结果（用于在诊断里透明展示读了什么/失败了什么）。"""
 
@@ -98,6 +122,9 @@ class ExternalSource(BaseModel):
     )
     evidence_kind: str = Field(
         default="", description="该来源提供的证据类型：doc / blog / code / test（博客≠源码）。"
+    )
+    selected_files: List[SelectedFile] = Field(
+        default_factory=list, description="repo map 动态选中的文件及其可解释选择依据/读取结果。"
     )
 
 

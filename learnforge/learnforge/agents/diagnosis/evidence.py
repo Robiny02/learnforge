@@ -20,8 +20,12 @@ import os
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from ...contracts.agents.diagnosis import ExternalSource
+from ...contracts.agents.diagnosis import ExternalSource, SelectedFile
 from ...contracts.enums import ExternalSourceKind
+from .repo_map import build_repo_map, claim_tokens, infer_role, select_files
+
+_ROLE_EVIDENCE = {"doc": "doc", "source": "code", "test": "test", "config": "config",
+                  "example": "code", "script": "code", "unknown": "doc"}
 
 _REPO_RE = re.compile(r"github\.com[/:]([\w.\-]+)/([\w.\-]+?)(?:\.git)?(?:[/#?]|\s|$)", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s)\]<>，。；」）]+", re.IGNORECASE)
@@ -35,19 +39,7 @@ _CORPUS_BUDGET = 16000
 _MAX_READS = 6              # 受控：deep 模式最多读多少个文件/页
 _MAX_TREE_FILES = 4         # 单 repo 按 claim 最多额外读多少源码/测试文件
 _MAX_DOCS = 2               # 除 README 外，自主挑多少篇核心说明文档
-
-# 文档/源码扩展名（结构信号，非项目特定）。
-_DOC_EXTS = (".md", ".rst", ".markdown", ".txt", ".adoc")
-_SRC_EXTS = (".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".cpp", ".cc", ".c", ".rb", ".kt")
-# 噪声/非核心目录：基准/依赖/构建产物不优先（通用，与具体项目无关）。
-_NOISE_DIRS = ("benchmark", "node_modules", "vendor", ".venv", "site-packages",
-               "dist", "build", "examples", "third_party", "fixtures", "testdata")
-# 通用英文停用词（抽 claim 技术 token 时剔除，非项目特定）。
-_STOP = {"the", "and", "with", "for", "using", "use", "used", "based", "via", "into", "from",
-         "that", "this", "system", "design", "designed", "build", "built", "implement",
-         "implemented", "support", "supports", "develop", "developed", "project", "module",
-         "core", "main", "data", "api", "app", "service", "model", "based", "auto", "self"}
-_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
+# 角色识别/token 抽取/噪声目录等结构信号统一在 repo_map.py（避免重复、保持单一真值）。
 
 
 def _in_pytest() -> bool:
@@ -124,79 +116,28 @@ def _gh_call(fn, args: Dict) -> Dict:
                 os.environ[k] = v
 
 
-def _evidence_kind_for_path(path: str) -> str:
-    low = path.lower()
-    if "test" in low or "spec" in low:
-        return "test"
-    if low.endswith(_DOC_EXTS) or "readme" in low:
-        return "doc"
-    if low.endswith(_SRC_EXTS):
-        return "code"
-    return "doc"
-
-
-def _is_noise(path: str) -> bool:
-    segs = path.lower().split("/")
-    return any(any(n in s for n in _NOISE_DIRS) for s in segs)
-
-
-def _rank_important_docs(blobs: List[Tuple[str, int]]) -> List[str]:
-    """从真实仓库树里**自主**挑最重要的说明文档（结构信号，不依赖任何写死的文件名/主题）。
-
-    排序键（小优先）：① 根目录或 docs/ 下（说明文档惯例位置）② 路径更浅 ③ 体量更大（更实质）。
-    README 由 repo_summary 单独取，这里挑 README 之外的核心文档。
-    """
-    cands = []
-    for path, size in blobs:
-        low = path.lower()
-        if not low.endswith(_DOC_EXTS) or _is_noise(low) or "readme" in low.rsplit("/", 1)[-1]:
-            continue
-        depth = low.count("/")
-        in_doc_loc = 0 if (depth == 0 or low.split("/", 1)[0] == "docs" or "/docs/" in low) else 1
-        cands.append((in_doc_loc, depth, -int(size or 0), path))
-    cands.sort()
-    return [p for *_, p in cands]
-
-
-def claim_tokens(text: str) -> set:
-    """从简历正文**动态**抽取技术 token（英文词/标识符，含 CamelCase/snake 拆分），用于匹配仓库路径。
-
-    不依赖任何项目特定词表——用候选人自己写的术语（Manager/ReAct/RocketMQ/JWT...）去仓库里找文件。
-    """
-    toks: set = set()
-    for m in _TOKEN_RE.finditer(text or ""):
-        w = m.group(0)
-        parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|[0-9]+", w) or [w]
-        for part in [w] + parts:
-            pl = part.lower()
-            if len(pl) >= 3 and pl not in _STOP:
-                toks.add(pl)
-    return toks
-
-
-def _pick_claim_files(blobs: List[Tuple[str, int]], tokens: set, limit: int) -> List[str]:
-    """用简历里抽出的技术 token，在真实仓库树里挑命中最多的源码/测试（无写死映射）。"""
-    scored = []
-    for path, _size in blobs:
-        low = path.lower()
-        if not low.endswith(_SRC_EXTS) or _is_noise(low):
-            continue
-        segs = re.split(r"[/_.\-]", low)
-        hits = sum(1 for t in tokens if t in segs or any(t in s for s in segs))
-        if hits == 0:
-            continue
-        is_test = 1 if ("test" in low or "spec" in low) else 0
-        scored.append((-hits, is_test, low.count("/"), path))
-    scored.sort()
-    return [p for *_, p in scored][:limit]
+def _content_match(content: str, expected: List[str]) -> Tuple[List[str], List[str]]:
+    """读到文件后做**内容级**匹配（不只看文件名）：返回 (命中的 token, 短证据片段)。"""
+    low = (content or "").lower()
+    matched = [t for t in expected if t.lower() in low]
+    facts: List[str] = []
+    if matched:
+        for line in (content or "").splitlines():
+            ll = line.strip()
+            if 8 <= len(ll) <= 160 and any(t.lower() in ll.lower() for t in matched):
+                facts.append(ll)
+            if len(facts) >= 2:
+                break
+    return matched, facts
 
 
 # --------------------------------------------------------------------------- 各类来源取证
 def _mine_github_repo(src: ExternalSource, repo: str, tokens: set,
                       budget: List[int], deep: bool = True) -> Tuple[List[str], List[str]]:
-    """github_repo：README + **自主挑的核心说明文档**（doc）+（deep 时）按 claim token 找源码/测试。
+    """github_repo：**构建 repo map → 动态选文件 → 读取 → 内容级匹配**。无写死文件名/主题。
 
-    无任何写死的文件名/主题：文档从真实仓库树按结构信号排序，源码按简历技术 token 匹配。
+    流程：repo_summary + list_tree → build_repo_map → select_files（带 reason/score）→ 逐个读，
+    填 SelectedFile 的 read_success/matched_claims/extracted_facts/read_success_but_no_match。
     """
     from ...tools.mcp.servers import github
 
@@ -206,32 +147,44 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set,
     if not summary.get("repo"):
         src.status, src.reason = "failed", (str(summary.get("error") or "仓库不可达")[:120])
         return blocks, labels
+    # README（GitHub 指定的仓库说明）始终读，记成一条 SelectedFile。
     langs = "、".join(list((summary.get("languages") or {}).keys())[:5])
     blocks.append(f"[github:{repo}/README｜doc] 语言={langs} stars={summary.get('stars')} "
                   f"描述={summary.get('description') or '无'}\n{(summary.get('readme_excerpt') or '')[:_PER_SOURCE_BUDGET]}")
     labels.append(f"github:{repo}/README")
     src.items_read.append("README.md")
     src.evidence_kind = "doc"
-    # 拉真实仓库树，自主挑「最重要的说明文档」；deep 时再按 claim token 找源码/测试。
+    readme_sel = SelectedFile(path="README.md", role="doc", evidence_kind="doc", score=99.0,
+                              selected_reason="GitHub 指定的仓库说明（项目入口文档）", read_success=True)
+    readme_sel.matched_claims, readme_sel.extracted_facts = _content_match(
+        summary.get("readme_excerpt") or "", list(tokens))
+    readme_sel.read_success_but_no_match = not readme_sel.matched_claims
+    src.selected_files.append(readme_sel)
+
+    # 构建 repo map → 动态选文件。
     tree = _gh_call(github.list_tree, {"repo": repo, "recursive": True})
-    blobs = [(t.get("path", ""), t.get("size", 0))
-             for t in (tree.get("tree") or []) if t.get("type") == "blob"]
-    targets = _rank_important_docs(blobs)[:_MAX_DOCS]
-    if deep:
-        targets += _pick_claim_files(blobs, tokens, _MAX_TREE_FILES)
-    for path in targets:
+    repo_map = build_repo_map(repo, summary, tree)
+    cap = max(1, min(budget[0], _MAX_DOCS + _MAX_TREE_FILES))
+    for sel in select_files(repo_map, tokens, budget=cap, deep=deep):
         if budget[0] <= 0:
             break
-        data = _gh_call(github.read_file, {"repo": repo, "path": path})
+        data = _gh_call(github.read_file, {"repo": repo, "path": sel.path})
         content = data.get("content") or ""
-        if content and "error" not in data:
-            kind = _evidence_kind_for_path(path)
-            blocks.append(f"[github:{repo}/{path}｜{kind}]\n{str(content)[:_PER_SOURCE_BUDGET]}")
-            labels.append(f"github:{repo}/{path}")
-            src.items_read.append(path)
-            if kind in ("code", "test"):  # 升级证据类型：读到源码/测试
-                src.evidence_kind = kind if src.evidence_kind == "doc" else src.evidence_kind
-            budget[0] -= 1
+        if not content or "error" in data:
+            sel.read_success = False
+            sel.selected_reason += "（读取失败）"
+            src.selected_files.append(sel)
+            continue
+        sel.read_success = True
+        sel.matched_claims, sel.extracted_facts = _content_match(content, sel.expected_claims or list(tokens))
+        sel.read_success_but_no_match = not sel.matched_claims  # 读到≠支持
+        blocks.append(f"[github:{repo}/{sel.path}｜{sel.evidence_kind}]\n{str(content)[:_PER_SOURCE_BUDGET]}")
+        labels.append(f"github:{repo}/{sel.path}")
+        src.items_read.append(sel.path)
+        src.selected_files.append(sel)
+        if sel.evidence_kind in ("code", "test") and src.evidence_kind == "doc":
+            src.evidence_kind = sel.evidence_kind
+        budget[0] -= 1
     return blocks, labels
 
 
@@ -252,7 +205,8 @@ def _mine_github_file(src: ExternalSource, budget: List[int]) -> Tuple[List[str]
     if not content or "error" in data:
         src.status, src.reason = "failed", (str(data.get("error") or "文件不可达")[:120])
         return [], []
-    kind = _evidence_kind_for_path(path)
+    role = infer_role(path)
+    kind = _ROLE_EVIDENCE.get(role, "doc")
     src.items_read.append(path)
     src.evidence_kind = kind
     budget[0] -= 1

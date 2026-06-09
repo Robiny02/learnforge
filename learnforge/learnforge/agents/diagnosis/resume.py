@@ -299,15 +299,25 @@ def render_resume_diagnosis(diag) -> str:
         lines += ["### 总体判断", diag.overall_verdict, ""]
     elif diag.summary:
         lines += [diag.summary, ""]
-    # 外部来源透明展示：读了哪些链接 + 哪些失败 + 证据类型。
+    # 外部来源透明展示：读了哪些链接 + repo map 选了哪些文件 + 为什么选 + 是否真支持。
     if diag.external_sources:
-        lines.append("### 已读取的项目材料")
+        lines.append("### 已读取的项目材料（repo map 动态选择）")
         for s in diag.external_sources:
-            if s.status == "read" and s.items_read:
-                kind = f"[{s.evidence_kind}] " if s.evidence_kind else ""
-                lines.append(f"- ✅ {kind}{s.kind.value}: {s.url} —— 读取 {('、'.join(s.items_read))}")
-            else:
+            if s.status != "read" and not s.items_read:
                 lines.append(f"- ❌ {s.kind.value}: {s.url} —— 未读取（{s.reason or s.status}）")
+                continue
+            lines.append(f"- {s.kind.value}: {s.url}")
+            if s.selected_files:
+                for f in s.selected_files:
+                    mark = "✅" if f.read_success else "⚠️"
+                    note = ""
+                    if f.read_success and f.matched_claims:
+                        note = f" → 命中 {('、'.join(f.matched_claims[:4]))}"
+                    elif f.read_success_but_no_match:
+                        note = " → 读到但未命中 claim（不据此判支持）"
+                    lines.append(f"    - {mark} [{f.role}/{f.evidence_kind}] `{f.path}`：{f.selected_reason}{note}")
+            elif s.items_read:
+                lines.append(f"    - 读取 {('、'.join(s.items_read))}")
         lines.append("")
     elif diag.evidence_sources_used:
         lines += [f"> 已读取项目材料：{('、'.join(diag.evidence_sources_used))}", ""]

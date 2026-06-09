@@ -454,43 +454,70 @@ def test_should_deep_mine_trigger():
     assert not should_deep_mine("有 https://github.com/a/b", deep_flag=False)  # 强制 fast
 
 
-def test_pick_claim_files_prefers_core_paths():
-    # 用简历技术 token（动态，非写死映射）在真实树里挑文件，排除基准/依赖目录。
-    from learnforge.agents.diagnosis.evidence import _pick_claim_files, claim_tokens
-    blobs = [("chunking_benchmark_v2/scripts/manager.py", 100),
-             ("learnforge/orchestration/manager.py", 200),
-             ("node_modules/x/manager.py", 50)]
-    tokens = claim_tokens("以 Manager 为核心的分层编排")  # 抽出 manager
-    picked = _pick_claim_files(blobs, tokens, limit=1)
-    assert picked == ["learnforge/orchestration/manager.py"]  # 排除基准/依赖，选核心包
-
-
 def test_claim_tokens_dynamic_no_hardcoding():
-    from learnforge.agents.diagnosis.evidence import claim_tokens
+    from learnforge.agents.diagnosis.repo_map import claim_tokens
     toks = claim_tokens("基于 LangGraph 的 ManagerAgent，用 RocketMQ + JWT 做鉴权")
     assert "manager" in toks and "agent" in toks   # CamelCase 拆分
     assert "rocketmq" in toks and "jwt" in toks     # 任意技术词，无需预设
     assert "design" not in toks and "the" not in toks  # 停用词剔除
 
 
-def test_rank_important_docs_is_structural():
-    # 自主挑核心说明文档：root/docs 优先、更浅、体量更大；不依赖写死的文件名。
-    from learnforge.agents.diagnosis.evidence import _rank_important_docs
-    blobs = [("ARCHITECTURE.md", 5000), ("docs/overview.md", 3000),
-             ("src/deep/nested/notes.md", 8000), ("benchmark/x.md", 9000),
-             ("README.md", 4000)]
-    ranked = _rank_important_docs(blobs)
-    assert "README.md" not in ranked            # README 由 repo_summary 单独取
-    assert ranked[0] == "ARCHITECTURE.md"       # root 层 + 大 → 最先
-    assert "benchmark/x.md" not in ranked       # 噪声目录排除
-    assert ranked.index("docs/overview.md") < ranked.index("src/deep/nested/notes.md")
+# --------------------------------------------------------------------------- #
+# Repo Map：构建 / 角色识别 / 动态选择（不依赖项目专属路径）
+# --------------------------------------------------------------------------- #
+def test_infer_role_structural():
+    from learnforge.agents.diagnosis.repo_map import infer_role
+    assert infer_role("learnforge/orchestration/manager.py") == "source"
+    assert infer_role("tests/test_manager.py") == "test"
+    assert infer_role("docs/overview.md") == "doc"
+    assert infer_role("pyproject.toml") == "config"
+    assert infer_role("examples/demo.py") == "example"
 
 
-def test_evidence_kind_for_path():
-    from learnforge.agents.diagnosis.evidence import _evidence_kind_for_path
-    assert _evidence_kind_for_path("learnforge/orchestration/manager.py") == "code"
-    assert _evidence_kind_for_path("tests/test_manager.py") == "test"
-    assert _evidence_kind_for_path("CLAUDE.md") == "doc"
+def _fake_tree(*paths_sizes):
+    return {"tree": [{"path": p, "type": "blob", "size": s} for p, s in paths_sizes]}
+
+
+def test_build_repo_map_classifies_roles():
+    from learnforge.agents.diagnosis.repo_map import build_repo_map
+    rm = build_repo_map("a/b",
+                        {"repo": "a/b", "description": "d", "languages": {"Python": 1}},
+                        _fake_tree(("README.md", 1000), ("src/core.py", 2000),
+                                   ("tests/test_core.py", 500), ("config.yaml", 100),
+                                   ("node_modules/x.js", 9)))
+    roles = rm.summary()
+    assert roles.get("doc") == 1 and roles.get("source") == 1
+    assert roles.get("test") == 1 and roles.get("config") == 1
+    assert all("node_modules" not in f.path for f in rm.files)  # 噪声目录排除
+
+
+def test_select_files_generalizes_to_non_agent_project():
+    # 秒杀项目：按候选人自己的 token(redis/rocketmq) 选源码，不依赖任何 LearnForge 专属规则。
+    from learnforge.agents.diagnosis.repo_map import build_repo_map, select_files, claim_tokens
+    rm = build_repo_map("a/seckill", {"repo": "a/seckill", "languages": {"Java": 1}},
+                        _fake_tree(("README.md", 3000), ("docs/design.md", 5000),
+                                   ("src/RedisStockService.java", 2000),
+                                   ("src/RocketMQProducer.java", 1500),
+                                   ("src/UserController.java", 1000),
+                                   ("application.yml", 300)))
+    sel = select_files(rm, claim_tokens("用 Redis 扣库存，RocketMQ 异步下单"), budget=5)
+    paths = [s.path for s in sel]
+    assert "src/RedisStockService.java" in paths      # 命中 redis
+    assert "src/RocketMQProducer.java" in paths        # 命中 rocketmq
+    assert "src/UserController.java" not in paths       # 无关 claim → 不选
+    # 每条都可解释
+    redis = [s for s in sel if "Redis" in s.path][0]
+    assert redis.selected_reason and "redis" in redis.expected_claims
+
+
+def test_select_files_different_tokens_pick_different_files():
+    from learnforge.agents.diagnosis.repo_map import build_repo_map, select_files, claim_tokens
+    rm = build_repo_map("a/b", {"repo": "a/b"},
+                        _fake_tree(("src/auth_jwt.py", 1000), ("src/payment_stripe.py", 1000)))
+    a = {s.path for s in select_files(rm, claim_tokens("JWT 鉴权"), budget=3)}
+    b = {s.path for s in select_files(rm, claim_tokens("Stripe 支付"), budget=3)}
+    assert "src/auth_jwt.py" in a and "src/auth_jwt.py" not in b
+    assert "src/payment_stripe.py" in b and "src/payment_stripe.py" not in a
 
 
 def test_deep_mining_reads_claim_files(monkeypatch):
@@ -505,37 +532,60 @@ def test_deep_mining_reads_claim_files(monkeypatch):
         return {"content": [{"type": "text", "text": json.dumps(d)}], "isError": False}
 
     monkeypatch.setattr(github, "repo_summary", lambda a: _resp(
-        {"repo": "a/b", "languages": {"Python": 1}, "readme_excerpt": "README 内容"}))
-    monkeypatch.setattr(github, "list_tree", lambda a: _resp(
-        {"tree": [{"path": "learnforge/orchestration/manager.py", "type": "blob"},
-                  {"path": "tests/test_manager.py", "type": "blob"},
-                  {"path": "CLAUDE.md", "type": "blob"}]}))
+        {"repo": "a/b", "languages": {"Python": 1}, "readme_excerpt": "README mentions manager"}))
+    monkeypatch.setattr(github, "list_tree", lambda a: _resp(_fake_tree(
+        ("learnforge/orchestration/manager.py", 2000),
+        ("tests/test_manager.py", 500), ("CLAUDE.md", 1000))))
     monkeypatch.setattr(github, "read_file", lambda a: _resp(
-        {"path": a["path"], "content": f"// content of {a['path']}"}))
+        {"path": a["path"], "content": f"class Manager: pass  # {a['path']}"}))
 
     ev = EV.mine_project_evidence("Manager 编排唯一写者 https://github.com/a/b", deep=True)
     src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
     assert "README.md" in src.items_read
     assert "learnforge/orchestration/manager.py" in src.items_read  # 按 claim 读到源码
     assert src.evidence_kind in ("code", "test")  # 证据类型升级（读到源码）
-    assert "｜code]" in ev["corpus"] or "｜doc]" in ev["corpus"]  # 证据块带类型标签
+    # repo map 选择被记录（含可解释依据 + 读后内容匹配）
+    paths = {f.path: f for f in src.selected_files}
+    mgr = paths["learnforge/orchestration/manager.py"]
+    assert mgr.read_success and mgr.selected_reason
+    assert "manager" in mgr.matched_claims          # 内容级匹配（不只文件名）
+    assert mgr.evidence_kind == "code"
 
 
-def test_render_shows_external_sources():
+def test_selected_file_read_but_no_match():
+    # 读到文件但内容不含 claim token → read_success_but_no_match=True（不据此判支持）。
+    from learnforge.agents.diagnosis.evidence import _content_match
+    from learnforge.contracts.agents.diagnosis import SelectedFile
+    matched, facts = _content_match("def helper(): return 1", ["manager", "redis"])
+    assert matched == [] and facts == []
+    f = SelectedFile(path="x.py", read_success=True)
+    f.matched_claims = matched
+    f.read_success_but_no_match = not matched
+    assert f.read_success_but_no_match
+
+
+def test_render_shows_selected_files_with_reasons():
     from learnforge.agents.diagnosis.resume import render_resume_diagnosis
-    from learnforge.contracts.agents.diagnosis import ExternalSource
+    from learnforge.contracts.agents.diagnosis import ExternalSource, SelectedFile
     from learnforge.contracts.enums import ExternalSourceKind
     d = ResumeDiagnosis(
         jd_fit=JDFitVerdict.STRONG, overall_verdict="ok",
         external_sources=[
             ExternalSource(url="https://github.com/a/b", kind=ExternalSourceKind.GITHUB_REPO,
-                           status="read", evidence_kind="code",
-                           items_read=["README.md", "orchestration/manager.py"]),
+                           status="read", evidence_kind="code", items_read=["manager.py"],
+                           selected_files=[
+                               SelectedFile(path="orchestration/manager.py", role="source",
+                                            evidence_kind="code", selected_reason="源码：命中 claim manager",
+                                            read_success=True, matched_claims=["manager"]),
+                               SelectedFile(path="tests/test_x.py", role="test", evidence_kind="test",
+                                            selected_reason="覆盖测试类型（多样性）", read_success=True,
+                                            read_success_but_no_match=True)]),
             ExternalSource(url="https://blog.x/p", kind=ExternalSourceKind.TECH_BLOG,
                            status="failed", reason="页面不可达"),
         ],
     )
     md = render_resume_diagnosis(d)
-    assert "已读取的项目材料" in md
-    assert "orchestration/manager.py" in md and "✅" in md
-    assert "未读取" in md and "页面不可达" in md  # 失败链接也透明展示
+    assert "repo map 动态选择" in md
+    assert "orchestration/manager.py" in md and "源码：命中 claim manager" in md  # 选择理由可见
+    assert "读到但未命中 claim" in md         # 区分读到 vs 支持
+    assert "未读取" in md and "页面不可达" in md  # 失败链接透明展示
