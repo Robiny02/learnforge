@@ -15,6 +15,7 @@ from ..enums import (
     ClaimType,
     DiagnosisTrigger,
     EvidenceStrength,
+    ExternalSourceKind,
     IssueSeverity,
     JDFitVerdict,
     ResumeIssueCategory,
@@ -85,6 +86,21 @@ class ResumeDimensions(BaseModel):
     jd_alignment: int = Field(default=0, ge=0, le=5, description="与目标岗位硬要求的对齐度。")
 
 
+class ExternalSource(BaseModel):
+    """一个被访问的外部链接及其读取结果（用于在诊断里透明展示读了什么/失败了什么）。"""
+
+    url: str
+    kind: ExternalSourceKind
+    status: str = Field(default="read", description="read | failed | skipped。")
+    reason: str = Field(default="", description="失败/跳过的原因（PAT 失效/私有仓库/超时/不可达）。")
+    items_read: List[str] = Field(
+        default_factory=list, description="实际读到的文件/页面（如 README.md / orchestration/manager.py）。"
+    )
+    evidence_kind: str = Field(
+        default="", description="该来源提供的证据类型：doc / blog / code / test（博客≠源码）。"
+    )
+
+
 class EvidencePacket(BaseModel):
     """单条 claim 的项目级证据包（项目拷打器核心）。
 
@@ -150,6 +166,9 @@ class ResumeDiagnosis(BaseModel):
     )
     evidence_sources_used: List[str] = Field(
         default_factory=list, description="本次挖掘实际读到的项目材料来源（github/附件/本地材料）。"
+    )
+    external_sources: List[ExternalSource] = Field(
+        default_factory=list, description="访问过的外部链接及读取结果（含失败原因），透明展示读了什么。"
     )
 
     # --- 兼容字段（v1，仍保留：弱点列表 / 亮点 / 五维 / 置信 / 指纹） ---

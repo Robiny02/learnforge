@@ -299,7 +299,17 @@ def render_resume_diagnosis(diag) -> str:
         lines += ["### 总体判断", diag.overall_verdict, ""]
     elif diag.summary:
         lines += [diag.summary, ""]
-    if diag.evidence_sources_used:
+    # 外部来源透明展示：读了哪些链接 + 哪些失败 + 证据类型。
+    if diag.external_sources:
+        lines.append("### 已读取的项目材料")
+        for s in diag.external_sources:
+            if s.status == "read" and s.items_read:
+                kind = f"[{s.evidence_kind}] " if s.evidence_kind else ""
+                lines.append(f"- ✅ {kind}{s.kind.value}: {s.url} —— 读取 {('、'.join(s.items_read))}")
+            else:
+                lines.append(f"- ❌ {s.kind.value}: {s.url} —— 未读取（{s.reason or s.status}）")
+        lines.append("")
+    elif diag.evidence_sources_used:
         lines += [f"> 已读取项目材料：{('、'.join(diag.evidence_sources_used))}", ""]
     if diag.top_highlights:
         lines += ["### 真正能打的亮点"] + [f"- {h}" for h in diag.top_highlights] + [""]

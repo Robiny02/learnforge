@@ -21,9 +21,18 @@
 - 入口：`DiagnosisAgent.diagnose_resume(resume_text, context?, persist=True) -> ResumeDiagnosis`。
 - **Pipeline**（不是逐句挑刺，是项目拷打器）：
   `resume+jd → claim 抽取与分类 → 项目证据挖掘 → EvidencePacket → 项目级诊断 → 改写+深挖问题`。
-  - 证据挖掘 `evidence.py`：从简历里的 github URL 拉 `repo_summary`(README/语言) + 关键文件
-    （CLAUDE.md/README）——**PAT 失效(401) 自动退公开访问**；外加上传材料(`recall origin=attachment`)。
-    网络挖掘在 pytest 下跳过；失败 → 空语料，退化为基于简历文本（"链路永远通"）。
+  - 证据挖掘 `evidence.py`，两档：
+    - **fast**（默认，无外链）：repo `repo_summary`(README/语言) + CLAUDE.md + 上传材料(`recall origin=attachment`)。
+    - **deep**（检测到外链 / `deep=True`）：link extraction → ExternalSource 分类(github_repo/file/dir/
+      tech_blog/docs_page/unknown_url) → **受控按 claim 取证**：github 树搜索读源码/测试（claim 关键词
+      manager·skill·memory·diagnosis·mock·retrieval·fallback → 路径匹配，排除 benchmark/依赖目录）、
+      博客/文档 `web.fetch_url`。受控：最多 `_MAX_READS=6` 个文件/页、单文件截断、只读用户链接及同 repo、
+      不做任意互联网搜索、URL/文件缓存、失败记 `ExternalSource.reason` 并继续。
+    - 触发：`should_deep_mine`（有外链或 `diagnose_resume(deep=True)`）。**PAT 失效(401) 自动退公开访问**。
+    - 证据按来源标 ｜doc/blog/code/test：blog/doc 只证『项目说明』，code/test 才证『实现存在』→ 据此定
+      `support_strength`(doc/code/test/runtime_supported)。外部网页/README 内容只作**证据数据**，prompt 里
+      隔离声明其指令不影响诊断行为（防 prompt injection）。网络挖掘 pytest 下跳过；失败 → 退化为简历文本。
+  - 输出 `external_sources`(读了哪些/失败原因) 在报告「已读取的项目材料」段透明展示。
   - LLM 路径用 skill `diagnosis.resume.v1`（项目级 SOP + Evidence-Contract C0-C3 + Truth-Boundary +
     LearnForge 专项核对点）；**用快模型 gpt-4o**（`LF_RESUME_MODEL` 可覆盖，慢推理模型单次~2min 会超时）。
   - 规则引擎 `resume.py`（离线确定性兜底）：跳过个人信息/学历/日期/**技术栈背景**，只对真实经历判风险。

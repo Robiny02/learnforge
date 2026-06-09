@@ -212,6 +212,17 @@ class JDFitVerdict(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ExternalSourceKind(str, Enum):
+    """简历/输入里外部链接的类型（决定怎么挖证据）。"""
+
+    GITHUB_REPO = "github_repo"      # owner/repo 根：读 summary/README/CLAUDE.md + 按 claim 找源码/测试
+    GITHUB_FILE = "github_file"      # /blob/.../file：直接读该文件
+    GITHUB_DIR = "github_dir"        # /tree/.../dir：列目录按 claim 选文件
+    TECH_BLOG = "tech_blog"          # 技术博客：fetch 正文（只算"项目说明"，非源码级证据）
+    DOCS_PAGE = "docs_page"          # 文档站（gitbook/notion/readthedocs）：fetch 作文档证据
+    UNKNOWN_URL = "unknown_url"      # 其它：尝试 fetch，失败记录原因
+
+
 class ClaimType(str, Enum):
     """简历 claim 的类型（项目级诊断先分类再拷打）。
 

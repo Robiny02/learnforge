@@ -429,3 +429,90 @@ def test_rewrite_coverage_backfill():
     assert len(d.rewritten_bullets) >= core
     # 第二条核心 claim 的 safe_now 被补进改写
     assert any("handoff summary" in b for b in d.rewritten_bullets)
+
+
+# --------------------------------------------------------------------------- #
+# 外部链接深挖（link extraction / 分类 / 受控按 claim 取证 / 来源透明）
+# --------------------------------------------------------------------------- #
+def test_extract_links_classify():
+    from learnforge.agents.diagnosis.evidence import extract_links
+    from learnforge.contracts.enums import ExternalSourceKind as K
+    srcs = extract_links("repo https://github.com/a/b 文件 https://github.com/a/b/blob/main/x.py "
+                          "博客 https://juejin.cn/post/1 文档 https://x.gitbook.io/y")
+    kinds = {s.url: s.kind for s in srcs}
+    assert kinds["https://github.com/a/b"] == K.GITHUB_REPO
+    assert kinds["https://github.com/a/b/blob/main/x.py"] == K.GITHUB_FILE
+    assert kinds["https://juejin.cn/post/1"] == K.TECH_BLOG
+    assert kinds["https://x.gitbook.io/y"] == K.DOCS_PAGE
+
+
+def test_should_deep_mine_trigger():
+    from learnforge.agents.diagnosis.evidence import should_deep_mine
+    assert should_deep_mine("见 https://github.com/a/b")          # 有外链 → 深挖
+    assert not should_deep_mine("纯文本简历，无链接")              # 无链接 → fast
+    assert should_deep_mine("无链接", deep_flag=True)             # deep=true 强制
+    assert not should_deep_mine("有 https://github.com/a/b", deep_flag=False)  # 强制 fast
+
+
+def test_pick_claim_files_prefers_core_paths():
+    from learnforge.agents.diagnosis.evidence import _pick_claim_files
+    paths = ["chunking_benchmark_v2/scripts/manager.py",
+             "learnforge/orchestration/manager.py",
+             "node_modules/x/manager.py"]
+    picked = _pick_claim_files(paths, ["manager"], limit=1)
+    assert picked == ["learnforge/orchestration/manager.py"]  # 排除基准/依赖，选核心包
+
+
+def test_evidence_kind_for_path():
+    from learnforge.agents.diagnosis.evidence import _evidence_kind_for_path
+    assert _evidence_kind_for_path("learnforge/orchestration/manager.py") == "code"
+    assert _evidence_kind_for_path("tests/test_manager.py") == "test"
+    assert _evidence_kind_for_path("CLAUDE.md") == "doc"
+
+
+def test_deep_mining_reads_claim_files(monkeypatch):
+    # 离线模拟 github：深挖应读 README + 按 claim 找的源码/测试，并记录 external_sources。
+    import learnforge.agents.diagnosis.evidence as EV
+    from learnforge.tools.mcp.servers import github
+
+    monkeypatch.setattr(EV, "_in_pytest", lambda: False)  # 放开网络门（下面已把 github 打桩）
+
+    def _resp(d):
+        import json
+        return {"content": [{"type": "text", "text": json.dumps(d)}], "isError": False}
+
+    monkeypatch.setattr(github, "repo_summary", lambda a: _resp(
+        {"repo": "a/b", "languages": {"Python": 1}, "readme_excerpt": "README 内容"}))
+    monkeypatch.setattr(github, "list_tree", lambda a: _resp(
+        {"tree": [{"path": "learnforge/orchestration/manager.py", "type": "blob"},
+                  {"path": "tests/test_manager.py", "type": "blob"},
+                  {"path": "CLAUDE.md", "type": "blob"}]}))
+    monkeypatch.setattr(github, "read_file", lambda a: _resp(
+        {"path": a["path"], "content": f"// content of {a['path']}"}))
+
+    ev = EV.mine_project_evidence("Manager 编排唯一写者 https://github.com/a/b", deep=True)
+    src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
+    assert "README.md" in src.items_read
+    assert "learnforge/orchestration/manager.py" in src.items_read  # 按 claim 读到源码
+    assert src.evidence_kind in ("code", "test")  # 证据类型升级（读到源码）
+    assert "｜code]" in ev["corpus"] or "｜doc]" in ev["corpus"]  # 证据块带类型标签
+
+
+def test_render_shows_external_sources():
+    from learnforge.agents.diagnosis.resume import render_resume_diagnosis
+    from learnforge.contracts.agents.diagnosis import ExternalSource
+    from learnforge.contracts.enums import ExternalSourceKind
+    d = ResumeDiagnosis(
+        jd_fit=JDFitVerdict.STRONG, overall_verdict="ok",
+        external_sources=[
+            ExternalSource(url="https://github.com/a/b", kind=ExternalSourceKind.GITHUB_REPO,
+                           status="read", evidence_kind="code",
+                           items_read=["README.md", "orchestration/manager.py"]),
+            ExternalSource(url="https://blog.x/p", kind=ExternalSourceKind.TECH_BLOG,
+                           status="failed", reason="页面不可达"),
+        ],
+    )
+    md = render_resume_diagnosis(d)
+    assert "已读取的项目材料" in md
+    assert "orchestration/manager.py" in md and "✅" in md
+    assert "未读取" in md and "页面不可达" in md  # 失败链接也透明展示
