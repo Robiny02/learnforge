@@ -35,14 +35,14 @@ def looks_like_resume_request(text: Optional[str]) -> bool:
     low = (text or "").lower()
     return any(cue in low for cue in _RESUME_CUES)
 
-# 风险标签 → (问题分类, 严重度)。
+# 风险标签 → (问题分类, 严重度)。夸大(overclaim)才是高风险；"描述了工作但缺内联指标"属中风险。
 _FLAG_TO_CATEGORY = {
     "overclaim": (ResumeIssueCategory.RISKY_LANGUAGE, IssueSeverity.HIGH),
-    "no_evidence": (ResumeIssueCategory.EVIDENCE_GAP, IssueSeverity.HIGH),
+    "no_evidence": (ResumeIssueCategory.EVIDENCE_GAP, IssueSeverity.MEDIUM),
     "vague": (ResumeIssueCategory.WEAK_PHRASING, IssueSeverity.MEDIUM),
 }
 _MIN_CLAIM_LEN = 6   # 过短的行（标题/分隔）不当 claim
-_MAX_ISSUES = 12
+_MAX_ISSUES = 8      # 规则兜底别刷屏；LLM 路径自行决定条数
 
 
 # 简历条目常见的「动词引导词」——用于在换行被压成空格后重新切条（附件入库会归一化空白）。
