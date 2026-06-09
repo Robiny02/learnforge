@@ -589,3 +589,68 @@ def test_render_shows_selected_files_with_reasons():
     assert "orchestration/manager.py" in md and "源码：命中 claim manager" in md  # 选择理由可见
     assert "读到但未命中 claim" in md         # 区分读到 vs 支持
     assert "未读取" in md and "页面不可达" in md  # 失败链接透明展示
+
+
+# --------------------------------------------------------------------------- #
+# Repo-RAG + Reranker + 受控 ReAct 证据循环
+# --------------------------------------------------------------------------- #
+def _mk_sel(path, role="source", hits=None):
+    from learnforge.contracts.agents.diagnosis import SelectedFile
+    return SelectedFile(path=path, role=role, evidence_kind="code",
+                        expected_claims=hits or [], selected_reason="x")
+
+
+def test_rerank_fallback_deterministic_without_llm(monkeypatch):
+    import learnforge.agents.diagnosis.evidence as EV
+    monkeypatch.setattr(EV, "_llm_pick", lambda *a, **k: None)  # 无 LLM → 退确定性
+    cands = [_mk_sel(f"f{i}.py") for i in range(6)]
+    out = EV.rerank_candidates("claims", cands, top_k=3)
+    assert [s.path for s in out] == ["f0.py", "f1.py", "f2.py"]  # 保持确定性序前 3
+
+
+def test_rerank_uses_llm_order(monkeypatch):
+    import learnforge.agents.diagnosis.evidence as EV
+    monkeypatch.setattr(EV, "_llm_pick", lambda prompt, n: [3, 1])  # LLM 选 3,1
+    cands = [_mk_sel(f"f{i}.py") for i in range(5)]
+    out = EV.rerank_candidates("claims", cands, top_k=3)
+    assert out[0].path == "f3.py" and out[1].path == "f1.py"  # LLM 选的在前
+    assert len(out) == 3  # 不足再用确定性补满
+
+
+def test_react_next_files_targets_unmatched(monkeypatch):
+    import learnforge.agents.diagnosis.evidence as EV
+    monkeypatch.setattr(EV, "_llm_pick", lambda *a, **k: None)  # 退确定性
+    remaining = [_mk_sel("src/auth/jwt_filter.py"), _mk_sel("src/order/pay.py")]
+    out = EV.react_next_files("claims", remaining, unmatched=["jwt"], k=1)
+    assert out and out[0].path == "src/auth/jwt_filter.py"  # 命中 unmatched 'jwt'
+
+
+def test_important_unmatched_filters_noise():
+    from learnforge.agents.diagnosis.evidence import _important_unmatched
+    um = _important_unmatched({"manager", "github", "https", "jwt", "io"}, matched={"manager"})
+    assert "jwt" in um and "manager" not in um  # 已命中的剔除
+    assert "github" not in um and "https" not in um and "io" not in um  # 噪声剔除
+
+
+def test_rag_loop_respects_budget(monkeypatch):
+    # 受控：单 repo 读取数不超过预算，离线（无 LLM）也能跑确定性 RAG。
+    import learnforge.agents.diagnosis.evidence as EV
+    from learnforge.tools.mcp.servers import github
+    monkeypatch.setattr(EV, "_in_pytest", lambda: False)
+
+    def _resp(d):
+        import json
+        return {"content": [{"type": "text", "text": json.dumps(d)}], "isError": False}
+
+    monkeypatch.setattr(github, "repo_summary", lambda a: _resp(
+        {"repo": "a/b", "languages": {"Python": 1}, "readme_excerpt": "redis jwt"}))
+    monkeypatch.setattr(github, "list_tree", lambda a: _resp(_fake_tree(
+        *[(f"src/redis_{i}.py", 500) for i in range(10)])))
+    monkeypatch.setattr(github, "read_file", lambda a: _resp(
+        {"path": a["path"], "content": "redis jwt code"}))
+
+    ev = EV.mine_project_evidence("用 Redis 做缓存，JWT 鉴权 https://github.com/a/b", deep=True)
+    src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
+    read = [f for f in src.selected_files if f.read_success]
+    assert len(read) <= 1 + EV._RAG_READ_PER_REPO + 2  # README + rerank + ≤1 轮 react×2，受控
+    assert any(f.path == "README.md" for f in src.selected_files)  # SOP 入口先读

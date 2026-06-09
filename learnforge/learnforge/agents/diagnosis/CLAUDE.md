@@ -24,7 +24,11 @@
   - 证据挖掘 `evidence.py`，两档：
     - **fast**（默认，无外链）：repo `repo_summary`(README/语言) + CLAUDE.md + 上传材料(`recall origin=attachment`)。
     - **deep**（检测到外链 / `deep=True`）：link extraction → ExternalSource 分类(github_repo/file/dir/
-      tech_blog/docs_page/unknown_url) → **repo map 动态取证**（**无写死的文件名/主题映射**）：
+      tech_blog/docs_page/unknown_url) → **Repo-RAG + Reranker + 受控 ReAct 证据循环**（像人读代码，不全量读）：
+      SOP 入口(README/tree) → 召回候选(select_files) → **reranker** 选最相关(快模型 gpt-4o-mini，只看元数据)
+      → 读 top files + 内容抽证据 → 判断 claim 是否被支撑(`_important_unmatched`) → 不足则 **≤1 轮受控 ReAct**
+      追读(`react_next_files`) → 收尾。成本受控：rerank/react 只看路径/角色/命中 token（不读内容）走快模型，
+      单 repo 读取上限 `_RAG_READ_PER_REPO=5` + ReAct ≤2，`LF_REPO_REACT=0` 可关；无 key → 退确定性排序。
       - `repo_map.py`：`build_repo_map(repo, summary, tree)` 把真实仓库树解析成带角色的 `FileEntry`
         （doc/source/test/config/example/script/unknown，`infer_role` 结构化判定，排噪声目录）；
         `select_files(repo_map, claim_tokens, budget, deep)` 综合 ①token 与 path/filename 相关性 ②文档重要性
