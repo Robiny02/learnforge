@@ -129,3 +129,33 @@ def test_server_attachment_routes_to_qa(monkeypatch):
     ))
     assert body["status"] == "ok"
     assert body["plan"][-1]["agent"] == "qa" and body["plan"][-1]["attachments"] == 1
+
+
+# ----------------------------------------------------------------- PDF 三级提取
+def test_pdf_text_extraction_with_pymupdf():
+    """pymupdf 路径：正常 PDF 直接抽出文本，不降级。"""
+    import pytest
+    fitz = pytest.importorskip("fitz")
+    from learnforge.multimodal.parse import _extract_pdf_text, _parse_pdf
+    from learnforge.contracts.attachment import Attachment
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Lead RAG retrieval, NDCG@10 improved\nResponsible module")
+    raw = doc.tobytes()
+    doc.close()
+
+    text, pages = _extract_pdf_text(raw)
+    assert "RAG retrieval" in text and pages == 1
+    att = Attachment(id="a", kind="pdf", filename="r.pdf")
+    _parse_pdf(att, raw)
+    assert "RAG retrieval" in att.extracted_text and not att.degraded
+
+
+def test_pdf_vision_ocr_gated_offline(monkeypatch):
+    """vision OCR 离线安全：LLM 不可用时直接返回空（不触网），由上层诚实降级。"""
+    from learnforge.llm import client
+    from learnforge.multimodal.parse import _ocr_pdf_via_vision
+
+    monkeypatch.setattr(client.LLM, "available", False, raising=False)
+    assert _ocr_pdf_via_vision(b"%PDF-1.4 fake", "r.pdf") == ""

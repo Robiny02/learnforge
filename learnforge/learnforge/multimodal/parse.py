@@ -104,38 +104,101 @@ def _to_data_url(data: str, mime: str) -> str:
 
 
 # ----------------------------------------------------------------- PDF
+# vision OCR 上限：只识别前 N 页，控制成本/延迟（简历通常 1-2 页）。
+_OCR_MAX_PAGES = 4
+_OCR_DPI = 150
+
+
 def _parse_pdf(att: Attachment, raw: bytes) -> None:
+    """三级提取：① pymupdf/pypdf 直接抽文本 → ② 乱码/空则渲染页图走 vision OCR → ③ 仍不行诚实降级。
+
+    Overleaf/LaTeX 的中文 PDF 常用子集字体且缺 ToUnicode，直接抽文本会乱码；此时退到 vision OCR
+    （读渲染像素，不受字体编码影响），需 pymupdf 渲染 + LLM 可用。
+    """
     if not raw:
         att.degraded, att.note = True, "PDF 数据为空"
         return
-    try:
-        from pypdf import PdfReader
-    except Exception:  # noqa: BLE001 - 缺依赖优雅降级
-        att.degraded = True
-        att.note = "未安装 pypdf，无法抽取 PDF 文本(可 pip install learnforge[multimodal])"
+    # ① 直接抽文本（pymupdf 对 LaTeX 比 pypdf 强；缺 pymupdf 回退 pypdf）。
+    text, pages = _extract_pdf_text(raw)
+    att.page_count = pages
+    if text and not _looks_garbled(text):
+        att.extracted_text, att.truncated = _budget(text)
+        if not att.extracted_text:
+            att.degraded, att.note = True, "PDF 抽取为空(可能是扫描件)"
         return
+    # ② 文本乱码/空 → 渲染页图走 vision OCR。
+    ocr = _ocr_pdf_via_vision(raw, att.filename)
+    if ocr and not _looks_garbled(ocr):
+        att.extracted_text, att.truncated = _budget(ocr)
+        att.note = "PDF 字体无法直接抽取，已用 vision 识别页面文本。"
+        return
+    # ③ 仍不行 → 诚实降级。
+    att.degraded = True
+    att.note = ("PDF 文本提取失败(字体子集/扫描件)。"
+                "请改用 .md/.txt 或导出文本版简历，或直接粘贴正文。")
+
+
+def _extract_pdf_text(raw: bytes) -> tuple:
+    """返回 (text, page_count)。优先 pymupdf；不可用则 pypdf；都不可用返回 ("", 0)。"""
     import io
 
-    reader = PdfReader(io.BytesIO(raw))
-    att.page_count = len(reader.pages)
-    parts: List[str] = []
-    for page in reader.pages:
-        try:
-            parts.append(page.extract_text() or "")
-        except Exception:  # noqa: BLE001 - 单页失败跳过
-            continue
-    text = "\n".join(p for p in parts if p.strip())
-    # 子集字体 + 缺 ToUnicode 的 PDF：pypdf 会把中文映射成随机文字系统的乱码字符。
-    # 在乱码上做任何分析都无意义 → 当作"无可用文本"降级，提示改用文本版。
-    if _looks_garbled(text):
-        att.degraded = True
-        att.note = ("PDF 文本提取为乱码(字体子集/无 ToUnicode 映射)，无法可靠解析。"
-                    "请改用 .md/.txt 或导出文本版简历，或直接粘贴正文。")
-        return
-    att.extracted_text, att.truncated = _budget(text)
-    if not att.extracted_text:
-        att.degraded = True
-        att.note = "PDF 抽取为空(可能是扫描件，后续可渲染页图走 vision)"
+    try:  # pymupdf：对 Overleaf/LaTeX 字体处理更好
+        import fitz  # type: ignore
+
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            parts = [page.get_text() or "" for page in doc]
+            return "\n".join(p for p in parts if p.strip()), doc.page_count
+    except Exception:  # noqa: BLE001 - 缺 pymupdf 或解析失败 → 退 pypdf
+        pass
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:  # noqa: BLE001 - 单页失败跳过
+                continue
+        return "\n".join(p for p in parts if p.strip()), len(reader.pages)
+    except Exception:  # noqa: BLE001
+        return "", 0
+
+
+def _ocr_pdf_via_vision(raw: bytes, filename: str = "") -> str:
+    """把 PDF 前几页渲染成 PNG，交 vision 模型逐字识别文本。需 pymupdf + LLM 可用，否则返回 ""。"""
+    from ..llm.client import LLM
+
+    if not LLM.available:
+        return ""
+    try:
+        import base64 as _b64
+
+        import fitz  # type: ignore
+
+        data_urls: List[str] = []
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            for page in list(doc)[:_OCR_MAX_PAGES]:
+                pix = page.get_pixmap(dpi=_OCR_DPI)
+                png = pix.tobytes("png")
+                data_urls.append("data:image/png;base64," + _b64.b64encode(png).decode())
+        if not data_urls:
+            return ""
+        from ..contracts.enums import ModelTier
+
+        res = LLM.complete(
+            prompt=(
+                f"这是简历 PDF「{filename or ''}」逐页渲染的图片。请**逐字提取**其中的所有文本，"
+                "原样输出（保留每一行、每个条目、时间、项目名与换行），不要总结、不要翻译、不要加解释。"
+                "用纯文本/Markdown 输出，按阅读顺序排列。"
+            ),
+            model_tier=ModelTier.SONNET,
+            max_tokens=4000,
+            images=data_urls,
+        )
+        return (res.text or "").strip()
+    except Exception:  # noqa: BLE001 - OCR 失败不阻断，交上层诚实降级
+        return ""
 
 
 def _looks_garbled(text: str) -> bool:
