@@ -794,6 +794,15 @@ class ManagerAgent(BaseAgent):
         if r.status != Status.OK:
             return None
         res = r.result or {}
+        # 简历诊断：直接用结构化渲染器（含逐条证据包/改写），不要再过 LLM 聚合重写（会重写+截断）。
+        if res.get("kind") == "resume_diagnosis":
+            try:
+                from ..agents.diagnosis.resume import render_resume_diagnosis
+                from ..contracts.agents.diagnosis import ResumeDiagnosis
+                diag = ResumeDiagnosis.model_validate({k: v for k, v in res.items() if k != "kind"})
+                return render_resume_diagnosis(diag)
+            except Exception:  # noqa: BLE001 - 渲染失败回退到下游聚合
+                pass
         ans = res.get("answer")  # QA 的自然语言答案
         if isinstance(ans, str) and len(ans.strip()) >= 10:
             return ans.strip()

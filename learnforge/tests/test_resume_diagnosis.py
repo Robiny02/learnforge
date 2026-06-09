@@ -350,3 +350,17 @@ def test_render_project_level_packets():
     assert "已读取项目材料" in md and "CLAUDE.md" in md
     assert "面试官会追问" in md and "Manager 怎么路由" in md
     assert "可直接替换进简历的改写" in md
+
+
+def test_manager_aggregate_renders_resume_directly_no_llm(tmp_db, monkeypatch):
+    # 无附件「我的简历有什么不足」走主图 → aggregate 应直接结构化渲染，不过 LLM 重写（会截断）。
+    monkeypatch.setattr(llm_client.LLM, "available", False)
+    _ingest_resume_attachment(tmp_db, _RESUME)
+    mgr = ManagerAgent(db_path=tmp_db)
+    resp = mgr._dispatch_impl("diagnosis", "我的简历有什么不足吗", {"session_id": "s1"})
+    assert resp.result["kind"] == "resume_diagnosis"
+    agg = mgr.aggregate([resp])
+    rt = agg["reply_text"]
+    # 结构化渲染（含标题 + 风险/逐条段），而不是被重写成一段叙述
+    assert "## 简历诊断" in rt
+    assert "风险点" in rt or "逐条项目级诊断" in rt
