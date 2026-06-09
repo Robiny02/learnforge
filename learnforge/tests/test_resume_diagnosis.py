@@ -192,11 +192,13 @@ def test_diagnose_resume_llm_path_uses_sop_and_adopts_output(tmp_db, monkeypatch
     # 采纳 LLM 输出
     assert d.summary == "LLM-SUMMARY"
     assert d.issues[0].category == ResumeIssueCategory.EVIDENCE_GAP
-    # SOP + few-shot 进入 system；规则锚点进入 prompt
+    # 项目级 SOP + few-shot 进入 system；简历正文 + pipeline 指令进入 prompt
     system = str(captured.get("system", ""))
     prompt = str(captured.get("prompt", ""))
-    assert "简历诊断 SOP" in system and "few-shot" in system
-    assert "风险锚点" in prompt and "主导上线企业级 RAG 系统" in prompt
+    assert "项目级简历诊断 SOP" in system and "few-shot" in system
+    assert "claim_type" in system and "技术栈背景" in system  # claim 分类 + tech-stack 不当风险
+    assert "项目级诊断" in prompt and "主导上线企业级 RAG 系统" in prompt
+    assert "EvidencePacket" in prompt or "packets" in prompt  # 证据包 pipeline
     # 持久化后可完整召回
     assert recall_resume_diagnoses(query="RAG", db_path=tmp_db)[0].summary == "LLM-SUMMARY"
 
@@ -287,3 +289,64 @@ def test_resume_ui_path_honest_when_text_unusable(tmp_db, monkeypatch):
     assert resp["status"] == Status.NEEDS_INPUT.value
     assert "乱码" in resp["reply_text"] or "提取到可用文本" in resp["reply_text"]
     assert ".md" in resp["reply_text"]  # 指引改用文本版
+
+
+# --------------------------------------------------------------------------- #
+# 项目级升级：证据挖掘 / claim 分类 / EvidencePacket 渲染
+# --------------------------------------------------------------------------- #
+def test_extract_repo_urls():
+    from learnforge.agents.diagnosis.evidence import extract_repo_urls
+    urls = extract_repo_urls("项目 LearnForge https://github.com/Robiny02/learnforge 2026.4")
+    assert urls == ["Robiny02/learnforge"]
+    assert extract_repo_urls("无链接") == []
+
+
+def test_evidence_mining_offline_uses_recall(monkeypatch):
+    # pytest 下 github 网络挖掘被跳过；本地 recall（上传材料）仍可用，离线安全。
+    from learnforge.agents.diagnosis.evidence import mine_project_evidence
+    ev = mine_project_evidence(
+        "基于 https://github.com/Robiny02/learnforge 的 Agent 系统",
+        recall_fn=lambda q: "【附件：项目说明】Manager 是唯一写者，QA/Diagnosis 是 agent-as-tool",
+    )
+    assert "uploaded-materials" in ev["sources"]
+    assert "唯一写者" in ev["corpus"]
+    assert ev["repos"] == ["Robiny02/learnforge"]  # 仍解析出 repo（只是不联网）
+
+
+def test_rule_engine_skips_tech_stack(tmp_db):
+    from learnforge.agents.diagnosis.resume import analyze_resume_rules
+    resume = ("技术栈：Python, FastAPI, LangGraph, Redis, Elasticsearch\n"
+              "主导上线企业级 RAG 系统，准确率显著提升")
+    d = analyze_resume_rules(resume, InterviewContext())
+    flagged = " ".join(i.excerpt for i in d.issues)
+    assert "技术栈" not in flagged and "FastAPI" not in flagged   # 技术栈不当风险
+    assert any(i.category == ResumeIssueCategory.RISKY_LANGUAGE for i in d.issues)  # 真夸大仍抓
+
+
+def test_render_project_level_packets():
+    from learnforge.app.server import _render_resume_diagnosis
+    from learnforge.contracts.agents.diagnosis import EvidencePacket
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength
+    d = ResumeDiagnosis(
+        jd_fit=JDFitVerdict.STRONG,
+        overall_verdict="整体不错",
+        top_highlights=["Manager 唯一写者编排"],
+        most_dangerous=["高并发无数据"],
+        evidence_sources_used=["github:x/y/CLAUDE.md"],
+        packets=[EvidencePacket(
+            claim="分层 Agent 架构", claim_type=ClaimType.ARCHITECTURE,
+            support_strength=EvidenceStrength.STRONG,
+            technical_highlight="唯一写者 + agent-as-tool",
+            evidence_found=["manager.py 有 plan/execute"], evidence_sources=["CLAUDE.md"],
+            missing_evidence=["编排成功率无数据 → 看 tests/"],
+            interview_questions=["Manager 怎么路由？"],
+            safe_now="设计分层编排", stronger_after_evidence="补数据后更强",
+        )],
+        rewritten_bullets=["原句→改写后的强 bullet"],
+    )
+    md = _render_resume_diagnosis(d)
+    assert "总体判断" in md and "真正能打的亮点" in md and "最危险" in md
+    assert "architecture" in md and "唯一写者 + agent-as-tool" in md
+    assert "已读取项目材料" in md and "CLAUDE.md" in md
+    assert "面试官会追问" in md and "Manager 怎么路由" in md
+    assert "可直接替换进简历的改写" in md

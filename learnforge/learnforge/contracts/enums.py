@@ -210,3 +210,29 @@ class JDFitVerdict(str, Enum):
     MEDIUM = "medium"
     STRONG = "strong"
     UNKNOWN = "unknown"
+
+
+class ClaimType(str, Enum):
+    """简历 claim 的类型（项目级诊断先分类再拷打）。
+
+    - ARCHITECTURE：架构/系统设计 claim（如"分层 Agent 架构""唯一写者"）。
+    - IMPLEMENTATION：具体实现 claim（用了什么算法/机制/数据结构）。
+    - METRIC：指标/效果 claim（提升 X%/QPS/准确率）。
+    - CONTRIBUTION：个人贡献/角色 claim（我负责/主导哪部分）。
+    - TECH_STACK：技术栈背景（用到的语言/框架/中间件枚举）——**不单独当风险点**。
+    """
+
+    ARCHITECTURE = "architecture"
+    IMPLEMENTATION = "implementation"
+    METRIC = "metric"
+    CONTRIBUTION = "contribution"
+    TECH_STACK = "tech_stack"
+
+
+class EvidenceStrength(str, Enum):
+    """claim 在项目材料中的证据支持强度。"""
+
+    NONE = "none"
+    WEAK = "weak"
+    MODERATE = "moderate"
+    STRONG = "strong"

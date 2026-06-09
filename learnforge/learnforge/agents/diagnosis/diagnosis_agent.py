@@ -223,17 +223,18 @@ class DiagnosisAgent(BaseAgent):
         base = analyze_resume_rules(resume_text or "", ctx)  # 确定性基线（链路永远通）
         result = base
 
+        # 项目证据挖掘：诊断前先读项目材料（github 仓库 + 上传材料），项目级诊断不只看简历文本。
+        evidence = self._mine_evidence(resume_text or "")
+
         if LLM.available and (resume_text or "").strip():
             sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
             if sk is not None:
                 prev = self.skill
                 self.skill = sk
                 try:
-                    # ResumeDiagnosis 是大 schema（多条 issue×多字段），max_tokens 偏小会截断 JSON
-                    # → 解析失败 → 静默退回规则引擎（又浅又跑偏）。给足额度并对失败出声。
                     import os as _os
                     out = self.llm_structured(
-                        self._resume_prompt(resume_text, ctx, base),
+                        self._resume_prompt(resume_text, ctx, base, evidence),
                         ResumeDiagnosis,
                         max_tokens=4096,
                         timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
@@ -243,20 +244,22 @@ class DiagnosisAgent(BaseAgent):
                     )
                 finally:
                     self.skill = prev
-                if out is not None and out.issues:
-                    # LLM 主导，但回填角色上下文与摘录，并保留确定性兜底的亮点。
+                # 新输出以 packets 为主，issues 可空 → 二者有其一即采纳。
+                if out is not None and (out.packets or out.issues):
                     out.target_role = out.target_role or ctx.target_role
                     out.role_type = out.role_type or base.role_type
                     out.resume_digest = out.resume_digest or base.resume_digest
                     if not out.strengths:
                         out.strengths = base.strengths
+                    if not out.evidence_sources_used:
+                        out.evidence_sources_used = list(evidence.get("sources") or [])
                     result = out
                 else:
                     import logging
                     logging.getLogger(__name__).warning(
                         "Resume LLM diagnosis produced no usable output (resume_len=%d); "
                         "falling back to the shallow rule engine. Likely JSON truncation or "
-                        "model/slug error — check LF_SONNET_MODEL.",
+                        "model/slug error — check LF_RESUME_MODEL.",
                         len((resume_text or "")),
                     )
 
@@ -269,23 +272,52 @@ class DiagnosisAgent(BaseAgent):
                 pass
         return result
 
+    def _mine_evidence(self, resume_text: str) -> dict:
+        """挖掘项目证据（github 仓库 + 上传材料）。失败/离线 → 空语料（不阻断）。"""
+        from .evidence import mine_project_evidence
+
+        def _recall(q: str) -> str:
+            from ...contracts.enums import KnowledgeScope
+            try:
+                return self.recall(q, scopes=[KnowledgeScope.LOCAL],
+                                   origin="attachment", top_k=4).text
+            except Exception:  # noqa: BLE001
+                return ""
+
+        try:
+            return mine_project_evidence(resume_text, recall_fn=_recall)
+        except Exception:  # noqa: BLE001 - 挖掘失败不阻断诊断
+            return {"corpus": "", "sources": [], "repos": []}
+
     @staticmethod
-    def _resume_prompt(resume_text: str, ctx: InterviewContext, base: ResumeDiagnosis) -> str:
-        anchors = "\n".join(
-            f"- [{i.category.value}/{i.severity.value}] {i.excerpt}" for i in base.issues[:8]
-        ) or "（规则层未发现明显风险，请你独立复核）"
+    def _resume_prompt(resume_text: str, ctx: InterviewContext, base: ResumeDiagnosis,
+                       evidence: Optional[dict] = None) -> str:
         role = ctx.target_role or "未指定"
         jd = (ctx.jd_text or "").strip()
         jd_line = f"\n目标 JD：{jd[:600]}" if jd else ""
+        ev = evidence or {}
+        corpus = str(ev.get("corpus") or "").strip()
+        if corpus:
+            ev_line = ("\n【项目材料证据（已为你读取，优先据此判断，不要凭空臆断）】\n"
+                       f"来源：{('、'.join(ev.get('sources') or []))}\n{corpus}\n")
+        else:
+            ev_line = ("\n【项目材料】未读到外部材料（仓库不可达/未上传），"
+                       "请基于简历文本谨慎判断，并明确指出该去哪个文件/测试/trace 找证据。\n")
         return (
-            f"诊断下面这份简历可能存在的问题。目标岗位：{role}。{jd_line}\n"
-            f"规则层已标记的风险锚点（可采纳/修正/补充，勿照抄）：\n{anchors}\n\n"
+            f"对这份简历做**项目级诊断**（不是逐句挑刺）。目标岗位：{role}。{jd_line}\n"
+            f"{ev_line}\n"
             f"简历正文：\n{(resume_text or '').strip()[:6000]}\n\n"
-            "审阅重点放在**项目与实习经历**的深度，而非个人信息/学历/联系方式（这些不要当问题）。\n"
-            "逐条经历审阅，产出 ResumeDiagnosis：每条 issue 必引简历原句作 excerpt，"
-            "给 problem/suggestion/evidence_needed/expected_question；并给 strengths、五维 dimensions、"
-            "jd_fit 与 summary。强 claim 无证据要标为高风险并给降级写法，不要奖励夸大。"
-            "针对项目要追问技术深度（架构取舍、指标口径、bad case、你负责的边界），不要泛泛而谈。"
+            "按 pipeline 产出 ResumeDiagnosis：\n"
+            "1) 先把每条经历/项目 bullet 抽成 claim 并分类(claim_type)：架构设计/具体实现/指标效果/"
+            "个人贡献/技术栈背景。技术栈背景不要当风险点。\n"
+            "2) 为每条 claim 产一个 EvidencePacket（packets）：结合上面的项目材料证据，给 evidence_found"
+            "+evidence_sources（引到具体文件/测试），support_strength，missing_evidence（缺什么且去哪找），"
+            "technical_highlight（这条背后真正能打的工程亮点），interview_questions（面试官会怎么深挖），"
+            "safe_now 与 stronger_after_evidence。\n"
+            "3) 顶层给 overall_verdict（总体判断）、top_highlights（真正能打的亮点）、most_dangerous（最危险表述）、"
+            "rewritten_bullets（可直接替换进简历的改写，逐条 原句→改写）、jd_fit、summary。\n"
+            "原则：只有在指出『哪个 claim 缺什么证据、去哪个文件/测试/trace 找、能支撑什么表达』之后，"
+            "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。"
         )
 
     # ----------------------------------------------------------- 段① events

@@ -16,13 +16,22 @@
 - `DiagnosisInput`：`time_window`(默认 30d) / `focus_topics` / `trigger`(user|post_mock|composite)。
 - `DiagnosisResult`：`weak_atoms` + `clusters`(severity) + `recommendations` + `confidence`。
 
-## 简历问题诊断（resume review）
+## 简历问题诊断（项目级 / Project-aware Resume Diagnosis）
 
 - 入口：`DiagnosisAgent.diagnose_resume(resume_text, context?, persist=True) -> ResumeDiagnosis`。
-  蒸馏自 llm-intern-skill，复用 `agents/mock/interview_skill.py`（overclaim/no_evidence/vague + 降级）。
-  规则引擎在 `resume.py`（离线确定性兜底）；LLM 路径用 skill `diagnosis.resume.v1`（SOP+few-shot）。
-- 输出 `ResumeDiagnosis`（contract）：`issues`(category/severity/excerpt/problem/suggestion/
-  evidence_needed/expected_question/risk_flags) + `strengths` + 五维 `dimensions` + `jd_fit` + `summary`。
+- **Pipeline**（不是逐句挑刺，是项目拷打器）：
+  `resume+jd → claim 抽取与分类 → 项目证据挖掘 → EvidencePacket → 项目级诊断 → 改写+深挖问题`。
+  - 证据挖掘 `evidence.py`：从简历里的 github URL 拉 `repo_summary`(README/语言) + 关键文件
+    （CLAUDE.md/README）——**PAT 失效(401) 自动退公开访问**；外加上传材料(`recall origin=attachment`)。
+    网络挖掘在 pytest 下跳过；失败 → 空语料，退化为基于简历文本（"链路永远通"）。
+  - LLM 路径用 skill `diagnosis.resume.v1`（项目级 SOP + Evidence-Contract C0-C3 + Truth-Boundary +
+    LearnForge 专项核对点）；**用快模型 gpt-4o**（`LF_RESUME_MODEL` 可覆盖，慢推理模型单次~2min 会超时）。
+  - 规则引擎 `resume.py`（离线确定性兜底）：跳过个人信息/学历/日期/**技术栈背景**，只对真实经历判风险。
+- 输出 `ResumeDiagnosis`（contract，v2）：`overall_verdict` + `top_highlights` + `most_dangerous` +
+  逐条 `packets`(EvidencePacket: claim_type/technical_highlight/evidence_found+sources/support_strength/
+  missing_evidence/interview_questions/safe_now/stronger_after_evidence) + `rewritten_bullets` +
+  `evidence_sources_used` + `jd_fit` + `summary`；兼容保留 v1 的 `issues`/`strengths`/`dimensions`。
+- 渲染：`app/server.py:_render_resume_diagnosis`（总体判断/亮点/危险表述/逐条证据包/改写）。
 - **详细保存可召回**（用户需求）：`persist=True` 经 `memory/resume.py` 把整条诊断作为**单个 chunk**
   写入 `chunks(kb_scope='local', origin='resume_diagnosis')`——正文=`search_text()` 供 FTS/子串命中，
   完整 JSON 存 `metadata.resume_diagnosis`。`recall_resume_diagnoses(query)` / `latest_resume_diagnosis()`

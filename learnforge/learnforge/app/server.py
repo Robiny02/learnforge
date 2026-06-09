@@ -277,26 +277,53 @@ def _qa_with_attachments(text: str, atts, session_id: str) -> dict:
 
 
 def _render_resume_diagnosis(diag) -> str:
-    """把 ResumeDiagnosis 渲染成前端可读的 Markdown 复盘。"""
-    lines = [f"## 简历诊断（JD 匹配：{diag.jd_fit.value}）", "", diag.summary, ""]
-    d = diag.dimensions
-    lines += [
-        f"**五维评分**：真实性 {d.truth_boundary}/5 · 证据 {d.evidence_contract}/5 · "
-        f"表达 {d.technical_expression}/5 · 抗追问 {d.interviewability}/5 · JD 对齐 {d.jd_alignment}/5",
-        "",
-    ]
-    if diag.issues:
+    """把 ResumeDiagnosis 渲染成前端可读的项目级 Markdown 诊断。"""
+    lines = [f"## 简历诊断（JD 匹配：{diag.jd_fit.value}）", ""]
+    if diag.overall_verdict:
+        lines += ["### 总体判断", diag.overall_verdict, ""]
+    elif diag.summary:
+        lines += [diag.summary, ""]
+    if diag.evidence_sources_used:
+        lines += [f"> 已读取项目材料：{('、'.join(diag.evidence_sources_used))}", ""]
+    if diag.top_highlights:
+        lines += ["### 真正能打的亮点"] + [f"- {h}" for h in diag.top_highlights] + [""]
+    if diag.most_dangerous:
+        lines += ["### ⚠️ 最危险的表述"] + [f"- {x}" for x in diag.most_dangerous] + [""]
+
+    # 逐条 bullet 的项目级诊断（证据包）。
+    if diag.packets:
+        lines.append("### 逐条项目级诊断")
+        for i, p in enumerate(diag.packets, 1):
+            lines.append(f"**{i}. [{p.claim_type.value}/证据{p.support_strength.value}]** {p.claim}")
+            if p.technical_highlight:
+                lines.append(f"   - 💡 亮点：{p.technical_highlight}")
+            if p.evidence_found:
+                src = f"（{('、'.join(p.evidence_sources))}）" if p.evidence_sources else ""
+                lines.append(f"   - ✅ 已有证据{src}：{('；'.join(p.evidence_found))}")
+            if p.missing_evidence:
+                lines.append(f"   - 🔍 缺证据/去哪找：{('；'.join(p.missing_evidence))}")
+            if p.interview_questions:
+                lines.append(f"   - ❓ 面试官会追问：{('；'.join(p.interview_questions))}")
+            if p.safe_now:
+                lines.append(f"   - ✍️ 现在能安全写：{p.safe_now}")
+            if p.stronger_after_evidence:
+                lines.append(f"   - 🚀 补证据后更强：{p.stronger_after_evidence}")
+        lines.append("")
+    elif diag.issues:  # 规则兜底（无 packets 时）
         lines.append("### 风险点")
         for i, it in enumerate(diag.issues, 1):
             lines += [
                 f"{i}. **[{it.category.value}/{it.severity.value}]** {it.excerpt}",
                 f"   - 问题：{it.problem}",
                 f"   - 改写：{it.suggestion}" if it.suggestion else "",
-                f"   - 需补证据：{('；'.join(it.evidence_needed))}" if it.evidence_needed else "",
                 f"   - 预期追问：{it.expected_question}" if it.expected_question else "",
             ]
-    if diag.strengths:
-        lines += ["", "### 可作为硬亮点"] + [f"- {s}" for s in diag.strengths]
+        lines.append("")
+
+    if diag.rewritten_bullets:
+        lines += ["### 可直接替换进简历的改写"] + [f"- {b}" for b in diag.rewritten_bullets] + [""]
+    if diag.strengths and not diag.top_highlights:
+        lines += ["### 可作为硬亮点"] + [f"- {s}" for s in diag.strengths]
     return "\n".join(x for x in lines if x is not None)
 
 

@@ -83,6 +83,8 @@ _META_RE = re.compile(
 # GPA 单独用词边界匹配，避免命中正文里别的字。
 _GPA_RE = re.compile(r"\bgpa\b|绩点", re.IGNORECASE)
 _DATE_ONLY_RE = re.compile(r"^[\s\d年月./~\-—至今present]+$", re.IGNORECASE)
+# 技术栈背景行（语言/框架/中间件枚举）——不单独当风险点（否则刷一堆无意义 evidence_gap）。
+_TECH_STACK_RE = re.compile(r"技术栈|tech\s*stack|skills?[:：]|熟悉|掌握|精通|了解|工具[:：]", re.IGNORECASE)
 _DEGREE_CUES = ("大学", "学院", "university", "college", "硕士", "本科", "学士", "博士", "专业")
 # 证据标记：量化数字/指标/产物词——有则视为有支撑。
 _NUM_RE = re.compile(r"\d+(\.\d+)?\s*(%|倍|万|亿|qps|ms|k\b|w\b|条|次|人|天|周|月)", re.IGNORECASE)
@@ -96,7 +98,8 @@ _EVIDENCE_MARKERS = ("指标", "数据", "日志", "对比", "实验", "ndcg", "
 def _is_meta_line(line: str) -> bool:
     """是否为非经历行（联系方式/学历事实/栏目/日期/链接）——跳过，不当风险。"""
     low = line.lower().strip()
-    if _META_RE.search(low) or _GPA_RE.search(low) or _DATE_ONLY_RE.match(line.strip()):
+    if (_META_RE.search(low) or _GPA_RE.search(low) or _DATE_ONLY_RE.match(line.strip())
+            or _TECH_STACK_RE.search(low)):
         return True
     # 纯学历事实行（含学校/学位且较短，无动作描述）。
     if any(c in low for c in _DEGREE_CUES) and len(line) < 30:
