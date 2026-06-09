@@ -71,6 +71,7 @@ class BaseAgent:
         session: str = "",
         images: Optional[List[str]] = None,
         timeout_s: Optional[float] = None,
+        model: Optional[str] = None,
     ) -> Optional[T]:
         """skill-driven 结构化调用；不可用/失败返回 None（调用方回退 stub）。
 
@@ -101,6 +102,7 @@ class BaseAgent:
                 max_tokens=max_tokens,
                 images=images,
                 timeout_s=timeout_s,
+                model=model,
             )
             self.last_cost_usd = result.cost_usd
             self.last_tokens = result.tokens

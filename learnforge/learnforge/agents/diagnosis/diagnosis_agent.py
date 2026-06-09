@@ -231,11 +231,15 @@ class DiagnosisAgent(BaseAgent):
                 try:
                     # ResumeDiagnosis 是大 schema（多条 issue×多字段），max_tokens 偏小会截断 JSON
                     # → 解析失败 → 静默退回规则引擎（又浅又跑偏）。给足额度并对失败出声。
+                    import os as _os
                     out = self.llm_structured(
                         self._resume_prompt(resume_text, ctx, base),
                         ResumeDiagnosis,
                         max_tokens=4096,
                         timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
+                        # 用快模型做结构化简历分析：慢推理模型(如 claude-sonnet-4.6 带思考)单次要~2min，
+                        # 破前端超时；gpt-4o 又快又强，深度足够。可经 LF_RESUME_MODEL 覆盖。
+                        model=_os.environ.get("LF_RESUME_MODEL", "openai/gpt-4o"),
                     )
                 finally:
                     self.skill = prev
