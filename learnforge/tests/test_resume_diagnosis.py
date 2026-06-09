@@ -455,12 +455,35 @@ def test_should_deep_mine_trigger():
 
 
 def test_pick_claim_files_prefers_core_paths():
-    from learnforge.agents.diagnosis.evidence import _pick_claim_files
-    paths = ["chunking_benchmark_v2/scripts/manager.py",
-             "learnforge/orchestration/manager.py",
-             "node_modules/x/manager.py"]
-    picked = _pick_claim_files(paths, ["manager"], limit=1)
+    # 用简历技术 token（动态，非写死映射）在真实树里挑文件，排除基准/依赖目录。
+    from learnforge.agents.diagnosis.evidence import _pick_claim_files, claim_tokens
+    blobs = [("chunking_benchmark_v2/scripts/manager.py", 100),
+             ("learnforge/orchestration/manager.py", 200),
+             ("node_modules/x/manager.py", 50)]
+    tokens = claim_tokens("以 Manager 为核心的分层编排")  # 抽出 manager
+    picked = _pick_claim_files(blobs, tokens, limit=1)
     assert picked == ["learnforge/orchestration/manager.py"]  # 排除基准/依赖，选核心包
+
+
+def test_claim_tokens_dynamic_no_hardcoding():
+    from learnforge.agents.diagnosis.evidence import claim_tokens
+    toks = claim_tokens("基于 LangGraph 的 ManagerAgent，用 RocketMQ + JWT 做鉴权")
+    assert "manager" in toks and "agent" in toks   # CamelCase 拆分
+    assert "rocketmq" in toks and "jwt" in toks     # 任意技术词，无需预设
+    assert "design" not in toks and "the" not in toks  # 停用词剔除
+
+
+def test_rank_important_docs_is_structural():
+    # 自主挑核心说明文档：root/docs 优先、更浅、体量更大；不依赖写死的文件名。
+    from learnforge.agents.diagnosis.evidence import _rank_important_docs
+    blobs = [("ARCHITECTURE.md", 5000), ("docs/overview.md", 3000),
+             ("src/deep/nested/notes.md", 8000), ("benchmark/x.md", 9000),
+             ("README.md", 4000)]
+    ranked = _rank_important_docs(blobs)
+    assert "README.md" not in ranked            # README 由 repo_summary 单独取
+    assert ranked[0] == "ARCHITECTURE.md"       # root 层 + 大 → 最先
+    assert "benchmark/x.md" not in ranked       # 噪声目录排除
+    assert ranked.index("docs/overview.md") < ranked.index("src/deep/nested/notes.md")
 
 
 def test_evidence_kind_for_path():

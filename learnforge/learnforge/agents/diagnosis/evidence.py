@@ -23,8 +23,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ...contracts.agents.diagnosis import ExternalSource
 from ...contracts.enums import ExternalSourceKind
 
-# 简历里常见的关键工程文档（按优先级读，给 LLM 当架构证据）。
-_KEY_FILES = ("CLAUDE.md", "README.md", "readme.md", "ARCHITECTURE.md", "docs/architecture.md")
 _REPO_RE = re.compile(r"github\.com[/:]([\w.\-]+)/([\w.\-]+?)(?:\.git)?(?:[/#?]|\s|$)", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s)\]<>，。；」）]+", re.IGNORECASE)
 _BLOG_HOSTS = ("medium.com", "juejin.cn", "zhihu.com", "csdn.net", "cnblogs.com", "jianshu.com",
@@ -36,18 +34,20 @@ _PER_SOURCE_BUDGET = 3500   # 单来源截断，控制 prompt 体积
 _CORPUS_BUDGET = 16000
 _MAX_READS = 6              # 受控：deep 模式最多读多少个文件/页
 _MAX_TREE_FILES = 4         # 单 repo 按 claim 最多额外读多少源码/测试文件
+_MAX_DOCS = 2               # 除 README 外，自主挑多少篇核心说明文档
 
-# claim 主题 → 仓库路径关键词（按需求 §6：按 claim 主动找相关源码/测试）。
-_CLAIM_FILE_HINTS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
-    # 主题: (简历里命中这些词就算有该 claim, 仓库路径里含这些词就算相关文件)
-    "manager": (("manager", "编排", "orchestrat", "调度", "唯一写"), ("manager", "orchestration", "graph")),
-    "skill": (("skill", "工具权限", "allowed", "tool 调用"), ("skill", "tool", "allowed", "react")),
-    "memory": (("memory", "记忆", "会话摘要", "handoff", "上下文"), ("memory", "session", "summary", "handoff")),
-    "diagnosis": (("diagnosis", "诊断", "掌握度", "弱点", "weak"), ("diagnosis", "mastery", "event", "weak")),
-    "mock": (("mock", "模拟面试", "interrupt", "resume", "追问"), ("mock", "interrupt", "resume", "action")),
-    "retrieval": (("retrieval", "检索", "召回", "rerank", "rrf", "向量"), ("retrieval", "hybrid", "rrf", "bm25", "vector")),
-    "fallback": (("fallback", "降级", "兜底", "stub"), ("fallback", "deterministic", "stub")),
-}
+# 文档/源码扩展名（结构信号，非项目特定）。
+_DOC_EXTS = (".md", ".rst", ".markdown", ".txt", ".adoc")
+_SRC_EXTS = (".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".cpp", ".cc", ".c", ".rb", ".kt")
+# 噪声/非核心目录：基准/依赖/构建产物不优先（通用，与具体项目无关）。
+_NOISE_DIRS = ("benchmark", "node_modules", "vendor", ".venv", "site-packages",
+               "dist", "build", "examples", "third_party", "fixtures", "testdata")
+# 通用英文停用词（抽 claim 技术 token 时剔除，非项目特定）。
+_STOP = {"the", "and", "with", "for", "using", "use", "used", "based", "via", "into", "from",
+         "that", "this", "system", "design", "designed", "build", "built", "implement",
+         "implemented", "support", "supports", "develop", "developed", "project", "module",
+         "core", "main", "data", "api", "app", "service", "model", "based", "auto", "self"}
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 
 
 def _in_pytest() -> bool:
@@ -126,57 +126,78 @@ def _gh_call(fn, args: Dict) -> Dict:
 
 def _evidence_kind_for_path(path: str) -> str:
     low = path.lower()
-    if "test" in low:
+    if "test" in low or "spec" in low:
         return "test"
-    if low.endswith((".md", ".rst", ".txt")) or "readme" in low or "claude.md" in low:
+    if low.endswith(_DOC_EXTS) or "readme" in low:
         return "doc"
-    if low.endswith((".py", ".js", ".ts", ".java", ".go", ".rs", ".cpp", ".c", ".cc")):
+    if low.endswith(_SRC_EXTS):
         return "code"
     return "doc"
 
 
-def _claim_themes(resume_text: str) -> List[str]:
-    low = (resume_text or "").lower()
-    return [theme for theme, (cues, _) in _CLAIM_FILE_HINTS.items()
-            if any(c.lower() in low for c in cues)]
+def _is_noise(path: str) -> bool:
+    segs = path.lower().split("/")
+    return any(any(n in s for n in _NOISE_DIRS) for s in segs)
 
 
-# 噪声/非核心目录：基准/依赖/构建产物里的同名文件不优先（如 benchmark 里的 manager.py）。
-_NOISE_DIRS = ("benchmark", "node_modules", "vendor", ".venv", "site-packages",
-               "dist", "build", "examples", "third_party")
-_SRC_EXTS = (".py", ".js", ".ts", ".java", ".go", ".rs")
+def _rank_important_docs(blobs: List[Tuple[str, int]]) -> List[str]:
+    """从真实仓库树里**自主**挑最重要的说明文档（结构信号，不依赖任何写死的文件名/主题）。
+
+    排序键（小优先）：① 根目录或 docs/ 下（说明文档惯例位置）② 路径更浅 ③ 体量更大（更实质）。
+    README 由 repo_summary 单独取，这里挑 README 之外的核心文档。
+    """
+    cands = []
+    for path, size in blobs:
+        low = path.lower()
+        if not low.endswith(_DOC_EXTS) or _is_noise(low) or "readme" in low.rsplit("/", 1)[-1]:
+            continue
+        depth = low.count("/")
+        in_doc_loc = 0 if (depth == 0 or low.split("/", 1)[0] == "docs" or "/docs/" in low) else 1
+        cands.append((in_doc_loc, depth, -int(size or 0), path))
+    cands.sort()
+    return [p for *_, p in cands]
 
 
-def _rank_match(path: str, hints: Tuple[str, ...]) -> tuple:
-    """排序键（小优先）：① 不在噪声目录 ② hint 命中目录段（更核心）③ 路径更浅 ④ 字典序。"""
-    low = path.lower()
-    segs = low.split("/")
-    noise = any(any(n in s for n in _NOISE_DIRS) for s in segs)
-    seg_hit = any(h in segs or any(h == s or s.startswith(h) for s in segs) for h in hints)
-    return (noise, not seg_hit, len(segs), path)
+def claim_tokens(text: str) -> set:
+    """从简历正文**动态**抽取技术 token（英文词/标识符，含 CamelCase/snake 拆分），用于匹配仓库路径。
+
+    不依赖任何项目特定词表——用候选人自己写的术语（Manager/ReAct/RocketMQ/JWT...）去仓库里找文件。
+    """
+    toks: set = set()
+    for m in _TOKEN_RE.finditer(text or ""):
+        w = m.group(0)
+        parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|[0-9]+", w) or [w]
+        for part in [w] + parts:
+            pl = part.lower()
+            if len(pl) >= 3 and pl not in _STOP:
+                toks.add(pl)
+    return toks
 
 
-def _pick_claim_files(tree_paths: List[str], themes: List[str], limit: int) -> List[str]:
-    """按 claim 主题在仓库树里挑相关源码/测试（优先核心包路径，排除基准/依赖目录）。"""
-    picked: List[str] = []
-    for theme in themes:
-        hints = _CLAIM_FILE_HINTS[theme][1]
-        matches = [p for p in tree_paths
-                   if any(h in p.lower() for h in hints) and p.lower().endswith(_SRC_EXTS)]
-        srcs = sorted([p for p in matches if "test" not in p.lower()], key=lambda p: _rank_match(p, hints))
-        tests = sorted([p for p in matches if "test" in p.lower()], key=lambda p: _rank_match(p, hints))
-        for p in srcs[:1] + tests[:1]:
-            if p not in picked:
-                picked.append(p)
-            if len(picked) >= limit:
-                return picked
-    return picked
+def _pick_claim_files(blobs: List[Tuple[str, int]], tokens: set, limit: int) -> List[str]:
+    """用简历里抽出的技术 token，在真实仓库树里挑命中最多的源码/测试（无写死映射）。"""
+    scored = []
+    for path, _size in blobs:
+        low = path.lower()
+        if not low.endswith(_SRC_EXTS) or _is_noise(low):
+            continue
+        segs = re.split(r"[/_.\-]", low)
+        hits = sum(1 for t in tokens if t in segs or any(t in s for s in segs))
+        if hits == 0:
+            continue
+        is_test = 1 if ("test" in low or "spec" in low) else 0
+        scored.append((-hits, is_test, low.count("/"), path))
+    scored.sort()
+    return [p for *_, p in scored][:limit]
 
 
 # --------------------------------------------------------------------------- 各类来源取证
-def _mine_github_repo(src: ExternalSource, repo: str, themes: List[str],
-                      budget: List[int]) -> Tuple[List[str], List[str]]:
-    """github_repo：README/CLAUDE.md（doc）+ 按 claim 找源码/测试（code/test）。返回 (证据块, 来源标签)。"""
+def _mine_github_repo(src: ExternalSource, repo: str, tokens: set,
+                      budget: List[int], deep: bool = True) -> Tuple[List[str], List[str]]:
+    """github_repo：README + **自主挑的核心说明文档**（doc）+（deep 时）按 claim token 找源码/测试。
+
+    无任何写死的文件名/主题：文档从真实仓库树按结构信号排序，源码按简历技术 token 匹配。
+    """
     from ...tools.mcp.servers import github
 
     blocks: List[str] = []
@@ -191,11 +212,13 @@ def _mine_github_repo(src: ExternalSource, repo: str, themes: List[str],
     labels.append(f"github:{repo}/README")
     src.items_read.append("README.md")
     src.evidence_kind = "doc"
-    # 树 + 按 claim 找源码/测试
+    # 拉真实仓库树，自主挑「最重要的说明文档」；deep 时再按 claim token 找源码/测试。
     tree = _gh_call(github.list_tree, {"repo": repo, "recursive": True})
-    paths = [t.get("path", "") for t in (tree.get("tree") or []) if t.get("type") == "blob"]
-    targets = ["CLAUDE.md"] if any(p == "CLAUDE.md" for p in paths) else []
-    targets += _pick_claim_files(paths, themes, _MAX_TREE_FILES)
+    blobs = [(t.get("path", ""), t.get("size", 0))
+             for t in (tree.get("tree") or []) if t.get("type") == "blob"]
+    targets = _rank_important_docs(blobs)[:_MAX_DOCS]
+    if deep:
+        targets += _pick_claim_files(blobs, tokens, _MAX_TREE_FILES)
     for path in targets:
         if budget[0] <= 0:
             break
@@ -270,7 +293,7 @@ def mine_project_evidence(
     labels: List[str] = []
     links = extract_links(resume_text)
     repos = extract_repo_urls(resume_text)
-    themes = _claim_themes(resume_text)
+    tokens = claim_tokens(resume_text)  # 简历里的技术 token（动态，无写死映射）
     budget = [_MAX_READS]  # 受控：可读文件/页总预算（list 便于内部递减）
 
     if allow_network and not _in_pytest():
@@ -281,15 +304,11 @@ def mine_project_evidence(
                     src.status, src.reason = "skipped", "已达最大读取数（受控上限）"
                     continue
                 try:
-                    if src.kind == ExternalSourceKind.GITHUB_REPO:
-                        repo = "/".join(extract_repo_urls(src.url)[:1]) or (extract_repo_urls(src.url) or [None])[0]
-                        repo = repo or _repo_from_url(src.url)
-                        b, lb = _mine_github_repo(src, repo, themes, budget) if repo else ([], [])
+                    if src.kind in (ExternalSourceKind.GITHUB_REPO, ExternalSourceKind.GITHUB_DIR):
+                        repo = _repo_from_url(src.url)
+                        b, lb = _mine_github_repo(src, repo, tokens, budget) if repo else ([], [])
                     elif src.kind == ExternalSourceKind.GITHUB_FILE:
                         b, lb = _mine_github_file(src, budget)
-                    elif src.kind == ExternalSourceKind.GITHUB_DIR:
-                        repo = _repo_from_url(src.url)
-                        b, lb = _mine_github_repo(src, repo, themes, budget) if repo else ([], [])
                     else:  # blog / docs / unknown
                         b, lb = _mine_fetch(src, budget)
                     blocks += b
@@ -300,18 +319,17 @@ def mine_project_evidence(
             for repo in repos:
                 if budget[0] > 0 and not any(repo in lb for lb in labels):
                     src = ExternalSource(url=f"https://github.com/{repo}", kind=ExternalSourceKind.GITHUB_REPO)
-                    b, lb = _mine_github_repo(src, repo, themes, budget)
+                    b, lb = _mine_github_repo(src, repo, tokens, budget)
                     blocks += b
                     labels += lb
                     links.append(src)
         else:
-            # fast：仅读仓库 README/CLAUDE.md（沿用原行为）。
+            # fast：读 README + 自主挑的核心说明文档（不读源码）。
             for repo in repos[:2]:
                 src = ExternalSource(url=f"https://github.com/{repo}", kind=ExternalSourceKind.GITHUB_REPO)
-                text, srcs = _fast_github(repo, src)
-                if text:
-                    blocks.append(text)
-                    labels.extend(srcs)
+                b, lb = _mine_github_repo(src, repo, tokens, budget, deep=False)
+                blocks += b
+                labels += lb
                 links.append(src)
 
     # 上传材料（本地，离线安全）。
@@ -332,35 +350,6 @@ def mine_project_evidence(
 def _repo_from_url(url: str) -> Optional[str]:
     repos = extract_repo_urls(url)
     return repos[0] if repos else None
-
-
-def _fast_github(repo: str, src: ExternalSource) -> Tuple[str, List[str]]:
-    """fast 档：只读 README + 关键文档文件。"""
-    from ...tools.mcp.servers import github
-    blocks: List[str] = []
-    sources: List[str] = []
-    summary = _gh_call(github.repo_summary, {"repo": repo})
-    if not summary.get("repo"):
-        src.status, src.reason = "failed", (str(summary.get("error") or "仓库不可达")[:120])
-        return "", []
-    langs = "、".join(list((summary.get("languages") or {}).keys())[:5])
-    blocks.append(f"[github:{repo}｜doc] 语言={langs} stars={summary.get('stars')} "
-                  f"描述={summary.get('description') or '无'}\nREADME:\n{summary.get('readme_excerpt') or ''}")
-    sources.append(f"github:{repo}/README")
-    src.items_read.append("README.md")
-    src.evidence_kind = "doc"
-    read = 0
-    for path in _KEY_FILES:
-        if read >= 2:
-            break
-        data = _gh_call(github.read_file, {"repo": repo, "path": path})
-        content = data.get("content") or data.get("text") or ""
-        if content and "error" not in data:
-            blocks.append(f"[github:{repo}/{path}｜doc]\n{str(content)[:_PER_SOURCE_BUDGET]}")
-            sources.append(f"github:{repo}/{path}")
-            src.items_read.append(path)
-            read += 1
-    return "\n\n".join(blocks), sources
 
 
 def should_deep_mine(resume_text: str, deep_flag: Optional[bool] = None) -> bool:

@@ -24,10 +24,11 @@
   - 证据挖掘 `evidence.py`，两档：
     - **fast**（默认，无外链）：repo `repo_summary`(README/语言) + CLAUDE.md + 上传材料(`recall origin=attachment`)。
     - **deep**（检测到外链 / `deep=True`）：link extraction → ExternalSource 分类(github_repo/file/dir/
-      tech_blog/docs_page/unknown_url) → **受控按 claim 取证**：github 树搜索读源码/测试（claim 关键词
-      manager·skill·memory·diagnosis·mock·retrieval·fallback → 路径匹配，排除 benchmark/依赖目录）、
-      博客/文档 `web.fetch_url`。受控：最多 `_MAX_READS=6` 个文件/页、单文件截断、只读用户链接及同 repo、
-      不做任意互联网搜索、URL/文件缓存、失败记 `ExternalSource.reason` 并继续。
+      tech_blog/docs_page/unknown_url) → **受控自主取证**（**无写死的文件名/主题映射**）：
+      访问 repo 时拉真实树，`_rank_important_docs` 按结构信号（root/docs 层级·深度·体量）自主挑核心说明文档；
+      `claim_tokens` 从简历动态抽技术 token（CamelCase/snake 拆分），`_pick_claim_files` 用这些 token 在真实树里
+      匹配源码/测试（排除 benchmark/依赖目录）；博客/文档走 `web.fetch_url`。受控：最多 `_MAX_READS=6`
+      个文件/页、单文件截断、只读用户链接及同 repo、不做任意互联网搜索、URL/文件缓存、失败记 reason 并继续。
     - 触发：`should_deep_mine`（有外链或 `diagnose_resume(deep=True)`）。**PAT 失效(401) 自动退公开访问**。
     - 证据按来源标 ｜doc/blog/code/test：blog/doc 只证『项目说明』，code/test 才证『实现存在』→ 据此定
       `support_strength`(doc/code/test/runtime_supported)。外部网页/README 内容只作**证据数据**，prompt 里
