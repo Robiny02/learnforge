@@ -230,9 +230,19 @@ class ClaimType(str, Enum):
 
 
 class EvidenceStrength(str, Enum):
-    """claim 在项目材料中的证据支持强度。"""
+    """claim 的证据支持**来源**（按可验证强度区分，不用笼统的 strong/weak）。
+
+    - NONE：无任何材料支撑。
+    - DOC_SUPPORTED：仅 README/CLAUDE.md/设计文档等**文档**支持（最弱，文档说有≠真做到）。
+    - CODE_SUPPORTED：有**源码**支持（能指到具体文件/函数）。
+    - TEST_SUPPORTED：有**测试**支持（测试覆盖该行为）。
+    - RUNTIME_SUPPORTED：有 **trace/benchmark/demo** 等运行期证据（最强）。
+
+    只读到 README/CLAUDE.md 时最多判 DOC_SUPPORTED，不要轻易判为 code/test/runtime。
+    """
 
     NONE = "none"
-    WEAK = "weak"
-    MODERATE = "moderate"
-    STRONG = "strong"
+    DOC_SUPPORTED = "doc_supported"
+    CODE_SUPPORTED = "code_supported"
+    TEST_SUPPORTED = "test_supported"
+    RUNTIME_SUPPORTED = "runtime_supported"

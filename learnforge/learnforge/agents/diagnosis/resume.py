@@ -35,6 +35,18 @@ def looks_like_resume_request(text: Optional[str]) -> bool:
     low = (text or "").lower()
     return any(cue in low for cue in _RESUME_CUES)
 
+
+_INTENT_RE = re.compile(r"(?:求职意向|意向岗位|求职方向|目标岗位|应聘岗位)\s*[:：]\s*(.+)")
+
+
+def extract_job_intent(resume_text: str) -> Optional[str]:
+    """从简历抽『求职意向：X』作为默认目标岗位（未提供 JD 时用它评估，避免 jd_fit=unknown）。"""
+    for line in (resume_text or "").splitlines():
+        m = _INTENT_RE.search(line.strip())
+        if m:
+            return m.group(1).strip()[:60] or None
+    return None
+
 # 风险标签 → (问题分类, 严重度)。夸大(overclaim)才是高风险；"描述了工作但缺内联指标"属中风险。
 _FLAG_TO_CATEGORY = {
     "overclaim": (ResumeIssueCategory.RISKY_LANGUAGE, IssueSeverity.HIGH),

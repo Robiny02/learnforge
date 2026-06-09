@@ -335,7 +335,7 @@ def test_render_project_level_packets():
         evidence_sources_used=["github:x/y/CLAUDE.md"],
         packets=[EvidencePacket(
             claim="分层 Agent 架构", claim_type=ClaimType.ARCHITECTURE,
-            support_strength=EvidenceStrength.STRONG,
+            support_strength=EvidenceStrength.CODE_SUPPORTED,
             technical_highlight="唯一写者 + agent-as-tool",
             evidence_found=["manager.py 有 plan/execute"], evidence_sources=["CLAUDE.md"],
             missing_evidence=["编排成功率无数据 → 看 tests/"],
@@ -364,3 +364,36 @@ def test_manager_aggregate_renders_resume_directly_no_llm(tmp_db, monkeypatch):
     # 结构化渲染（含标题 + 风险/逐条段），而不是被重写成一段叙述
     assert "## 简历诊断" in rt
     assert "风险点" in rt or "逐条项目级诊断" in rt
+
+
+def test_jd_default_from_job_intent(tmp_db, monkeypatch):
+    # 未提供目标岗位 → 按简历『求职意向』默认评估，target_role 被回填。
+    from learnforge.agents.diagnosis.resume import extract_job_intent
+    assert extract_job_intent("求职意向：后端开发+agent") == "后端开发+agent"
+    monkeypatch.setattr(llm_client.LLM, "available", False)
+    resume = "求职意向：后端开发+agent\n主导上线企业级 RAG 系统，准确率显著提升"
+    ctx = InterviewContext()  # 不传 target_role
+    DiagnosisAgent(db_path=tmp_db).diagnose_resume(resume, ctx)
+    assert ctx.target_role == "后端开发+agent"  # 回填
+
+
+def test_evidence_strength_is_source_based():
+    from learnforge.contracts.enums import EvidenceStrength
+    vals = {e.value for e in EvidenceStrength}
+    assert {"doc_supported", "code_supported", "test_supported", "runtime_supported"} <= vals
+    assert "strong" not in vals and "moderate" not in vals  # 不再用笼统强弱
+
+
+def test_resume_skill_encodes_new_rules():
+    from learnforge.skills.bootstrap import ensure_skills_registered
+    from learnforge.skills.registry import SKILL_REGISTRY
+    ensure_skills_registered()
+    sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
+    sp, sop = sk.spec.system_prompt, sk.load_instructions()
+    # 证据按来源 + 架构不强求指标 + 禁编造 X% + 改写保留关键词 + JD 默认
+    assert "doc_supported" in sp and "runtime_supported" in sp
+    assert "不要强求性能指标" in sp and "提升 X%" in sp
+    assert "Manager/QA/Diagnosis/Planning/Mock/ReAct/唯一写入" in sp
+    assert "unknown" in sp  # JD 默认规则
+    # 追问攻具体设计
+    assert "为什么唯一写者" in sop and "interrupt/resume" in sop

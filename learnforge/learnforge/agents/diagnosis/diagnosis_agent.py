@@ -217,9 +217,12 @@ class DiagnosisAgent(BaseAgent):
         不破坏 DiagnosisAgent 只读不变量（其守护的状态表不受影响）。
         无 key → 确定性规则兜底；有 key → LLM 增强后合并。
         """
-        from .resume import analyze_resume_rules
+        from .resume import analyze_resume_rules, extract_job_intent
 
         ctx = context or InterviewContext()
+        # JD 默认：未提供目标岗位时，按简历『求职意向』评估（避免 jd_fit=unknown）。
+        if not ctx.target_role:
+            ctx.target_role = extract_job_intent(resume_text or "")
         base = analyze_resume_rules(resume_text or "", ctx)  # 确定性基线（链路永远通）
         result = base
 
@@ -292,9 +295,9 @@ class DiagnosisAgent(BaseAgent):
     @staticmethod
     def _resume_prompt(resume_text: str, ctx: InterviewContext, base: ResumeDiagnosis,
                        evidence: Optional[dict] = None) -> str:
-        role = ctx.target_role or "未指定"
+        role = ctx.target_role or "后端开发+agent（按简历求职意向默认评估）"
         jd = (ctx.jd_text or "").strip()
-        jd_line = f"\n目标 JD：{jd[:600]}" if jd else ""
+        jd_line = f"\n目标 JD：{jd[:600]}" if jd else "\n（未提供 JD → 按上面目标岗位评估，jd_fit 给 risky/medium/strong，不要 unknown）"
         ev = evidence or {}
         corpus = str(ev.get("corpus") or "").strip()
         if corpus:
@@ -310,12 +313,18 @@ class DiagnosisAgent(BaseAgent):
             "按 pipeline 产出 ResumeDiagnosis：\n"
             "1) 先把每条经历/项目 bullet 抽成 claim 并分类(claim_type)：架构设计/具体实现/指标效果/"
             "个人贡献/技术栈背景。技术栈背景不要当风险点。\n"
-            "2) 为每条 claim 产一个 EvidencePacket（packets）：结合上面的项目材料证据，给 evidence_found"
-            "+evidence_sources（引到具体文件/测试），support_strength，missing_evidence（缺什么且去哪找），"
-            "technical_highlight（这条背后真正能打的工程亮点），interview_questions（面试官会怎么深挖），"
-            "safe_now 与 stronger_after_evidence。\n"
-            "3) 顶层给 overall_verdict（总体判断）、top_highlights（真正能打的亮点）、most_dangerous（最危险表述）、"
-            "rewritten_bullets（可直接替换进简历的改写，逐条 原句→改写）、jd_fit、summary。\n"
+            "2) 为每条 claim 产一个 EvidencePacket（packets）：evidence_found+evidence_sources（引具体文件）；"
+            "support_strength 按来源 none/doc_supported/code_supported/test_supported/runtime_supported"
+            "（只读到 README/CLAUDE.md→最多 doc_supported）；missing_evidence 写缺什么+去哪找"
+            "（architecture/implementation/contribution 缺的是源码/测试/trace/设计文档，**不要强求性能指标**；"
+            "metric 才缺 QPS/延迟/准确率）；technical_highlight 写真正能打的工程点；"
+            "interview_questions 攻具体设计（Manager 为何唯一写者 / agent-as-tool vs 多 agent 对话 / replan 触发与"
+            "≤2 限制 / Diagnosis 为何只读 / mastery·recency·error_freq 怎么算 / Skill allowed tools 怎么校验 / "
+            "fallback 如何保链路 / Mock interrupt-resume 如何恢复状态，按本条挑相关的）；"
+            "safe_now；stronger_after_evidence **只说要补的证据类型，禁止编造『提升 X%』**。\n"
+            "3) 顶层 overall_verdict、top_highlights、most_dangerous、jd_fit、summary；"
+            "rewritten_bullets：可直接粘贴的改写，**信息密度高于原句、保留全部关键技术词**"
+            "(Manager/QA/Diagnosis/Planning/Mock/ReAct/唯一写入等)，只收紧夸大，不许删成空泛短句。\n"
             "原则：只有在指出『哪个 claim 缺什么证据、去哪个文件/测试/trace 找、能支撑什么表达』之后，"
             "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。\n"
             "【格式硬约束，必须遵守】overall_verdict 与 summary 各 ≤3 句，**不要把整篇报告写进任何单个字段**；"
