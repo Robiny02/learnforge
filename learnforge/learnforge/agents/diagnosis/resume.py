@@ -47,6 +47,19 @@ def extract_job_intent(resume_text: str) -> Optional[str]:
             return m.group(1).strip()[:60] or None
     return None
 
+
+def detect_resume_language(resume_text: str) -> str:
+    """检测简历主语言：CJK 字符占比 ≥15% 视为中文('zh')，否则英文('en')。
+
+    用于锁定输出语言——不能因为挖到的 README/CLAUDE.md 是英文就把中文简历的诊断切成英文。
+    """
+    s = resume_text or ""
+    cjk = sum(1 for ch in s if "一" <= ch <= "鿿")
+    alpha = sum(1 for ch in s if ch.isalpha())
+    if alpha == 0:
+        return "zh" if cjk else "en"
+    return "zh" if cjk / max(1, cjk + alpha) >= 0.15 else "en"
+
 # 风险标签 → (问题分类, 严重度)。夸大(overclaim)才是高风险；"描述了工作但缺内联指标"属中风险。
 _FLAG_TO_CATEGORY = {
     "overclaim": (ResumeIssueCategory.RISKY_LANGUAGE, IssueSeverity.HIGH),

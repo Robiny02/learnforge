@@ -217,12 +217,13 @@ class DiagnosisAgent(BaseAgent):
         不破坏 DiagnosisAgent 只读不变量（其守护的状态表不受影响）。
         无 key → 确定性规则兜底；有 key → LLM 增强后合并。
         """
-        from .resume import analyze_resume_rules, extract_job_intent
+        from .resume import analyze_resume_rules, detect_resume_language, extract_job_intent
 
         ctx = context or InterviewContext()
         # JD 默认：未提供目标岗位时，按简历『求职意向』评估（避免 jd_fit=unknown）。
         if not ctx.target_role:
             ctx.target_role = extract_job_intent(resume_text or "")
+        lang = detect_resume_language(resume_text or "")  # 锁定输出语言（中文简历→中文输出）
         base = analyze_resume_rules(resume_text or "", ctx)  # 确定性基线（链路永远通）
         result = base
 
@@ -237,7 +238,7 @@ class DiagnosisAgent(BaseAgent):
                 try:
                     import os as _os
                     out = self.llm_structured(
-                        self._resume_prompt(resume_text, ctx, base, evidence),
+                        self._resume_prompt(resume_text, ctx, base, evidence, lang),
                         ResumeDiagnosis,
                         max_tokens=8000,  # 项目级输出较大，4096 会截断（模型把整篇塞进一个字段时尤甚）
                         timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
@@ -256,6 +257,7 @@ class DiagnosisAgent(BaseAgent):
                         out.strengths = base.strengths
                     if not out.evidence_sources_used:
                         out.evidence_sources_used = list(evidence.get("sources") or [])
+                    self._ensure_rewrite_coverage(out)  # 每条核心 claim 至少一条改写（req4）
                     result = out
                 else:
                     import logging
@@ -293,11 +295,37 @@ class DiagnosisAgent(BaseAgent):
             return {"corpus": "", "sources": [], "repos": []}
 
     @staticmethod
+    def _ensure_rewrite_coverage(out: ResumeDiagnosis) -> None:
+        """每条核心 claim（非技术栈）至少有一条改写；模型漏给时用该 packet 的 safe_now 兜底补齐。"""
+        from ...contracts.enums import ClaimType
+
+        core = [p for p in out.packets if p.claim_type != ClaimType.TECH_STACK]
+        if not core or len(out.rewritten_bullets) >= len(core):
+            return
+        existing = "\n".join(out.rewritten_bullets)
+        for p in core:
+            key = (p.claim or "")[:8]
+            covered = key and key in existing
+            if not covered:
+                cand = (p.safe_now or "").strip() or (p.stronger_after_evidence or "").strip()
+                if cand and cand not in existing:
+                    out.rewritten_bullets.append(cand)
+                    existing += "\n" + cand
+
+    @staticmethod
     def _resume_prompt(resume_text: str, ctx: InterviewContext, base: ResumeDiagnosis,
-                       evidence: Optional[dict] = None) -> str:
+                       evidence: Optional[dict] = None, lang: str = "zh") -> str:
         role = ctx.target_role or "后端开发+agent（按简历求职意向默认评估）"
         jd = (ctx.jd_text or "").strip()
         jd_line = f"\n目标 JD：{jd[:600]}" if jd else "\n（未提供 JD → 按上面目标岗位评估，jd_fit 给 risky/medium/strong，不要 unknown）"
+        if lang == "zh":
+            lang_line = ("\n【输出语言】简历主要是中文 → 所有面向用户的字段（overall_verdict/top_highlights/"
+                         "most_dangerous/summary 及每个 packet 的 technical_highlight/problem/missing_evidence/"
+                         "interview_questions/safe_now/stronger_after_evidence/rewritten_bullets）**一律用中文**；"
+                         "**不要因为读到的 README/CLAUDE.md 是英文就切英文**。技术术语/文件路径/类名/函数名"
+                         "（如 ManagerAgent、orchestration/manager.py）保留英文。\n")
+        else:
+            lang_line = "\n【输出语言】English resume → write all user-facing fields in English.\n"
         ev = evidence or {}
         corpus = str(ev.get("corpus") or "").strip()
         if corpus:
@@ -307,7 +335,7 @@ class DiagnosisAgent(BaseAgent):
             ev_line = ("\n【项目材料】未读到外部材料（仓库不可达/未上传），"
                        "请基于简历文本谨慎判断，并明确指出该去哪个文件/测试/trace 找证据。\n")
         return (
-            f"对这份简历做**项目级诊断**（不是逐句挑刺）。目标岗位：{role}。{jd_line}\n"
+            f"对这份简历做**项目级诊断**（不是逐句挑刺）。目标岗位：{role}。{jd_line}{lang_line}\n"
             f"{ev_line}\n"
             f"简历正文：\n{(resume_text or '').strip()[:6000]}\n\n"
             "按 pipeline 产出 ResumeDiagnosis：\n"
@@ -321,10 +349,15 @@ class DiagnosisAgent(BaseAgent):
             "interview_questions 攻具体设计（Manager 为何唯一写者 / agent-as-tool vs 多 agent 对话 / replan 触发与"
             "≤2 限制 / Diagnosis 为何只读 / mastery·recency·error_freq 怎么算 / Skill allowed tools 怎么校验 / "
             "fallback 如何保链路 / Mock interrupt-resume 如何恢复状态，按本条挑相关的）；"
-            "safe_now；stronger_after_evidence **只说要补的证据类型，禁止编造『提升 X%』**。\n"
+            "safe_now；stronger_after_evidence **必须给出『补X后可以这样写进简历』的增强版 bullet**"
+            "（不是只说『补充 manager.py 文档』；禁止编造『提升 X%』）。\n"
+            "【架构表述纠偏】如真实设计是 Manager 调度子 Agent、子 Agent 内部用 ReAct 调工具，就**严格这样表达**，"
+            "不要写成『Manager 自己通过 ReAct 调所有工具』，除非有代码证据。\n"
             "3) 顶层 overall_verdict、top_highlights、most_dangerous、jd_fit、summary；"
-            "rewritten_bullets：可直接粘贴的改写，**信息密度高于原句、保留全部关键技术词**"
-            "(Manager/QA/Diagnosis/Planning/Mock/ReAct/唯一写入等)，只收紧夸大，不许删成空泛短句。\n"
+            "rewritten_bullets：可直接粘贴的改写，**信息密度高于原句、保留原 claim 关键实体**"
+            "(Manager / QA·Diagnosis·Planning·Mock / ReAct / Skill / allowed tools / memory / handoff summary / "
+            "fallback 等)，只收紧夸大、不许信息缩水或删成空泛短句；原句是中文则改写也用中文。"
+            "**每条核心 claim（非技术栈）都要有对应的 rewritten_bullet——诊断了 N 条就至少给 N 条改写**。\n"
             "原则：只有在指出『哪个 claim 缺什么证据、去哪个文件/测试/trace 找、能支撑什么表达』之后，"
             "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。\n"
             "【格式硬约束，必须遵守】overall_verdict 与 summary 各 ≤3 句，**不要把整篇报告写进任何单个字段**；"

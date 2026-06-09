@@ -393,7 +393,39 @@ def test_resume_skill_encodes_new_rules():
     # 证据按来源 + 架构不强求指标 + 禁编造 X% + 改写保留关键词 + JD 默认
     assert "doc_supported" in sp and "runtime_supported" in sp
     assert "不要强求性能指标" in sp and "提升 X%" in sp
-    assert "Manager/QA/Diagnosis/Planning/Mock/ReAct/唯一写入" in sp
+    assert "handoff summary" in sp and "fallback" in sp  # 改写需保留的关键实体
     assert "unknown" in sp  # JD 默认规则
+    # 输出语言跟随简历 + 架构表述纠偏 + stronger 增强版
+    assert "不要因为 README/CLAUDE.md 是英文就切英文" in sp
+    assert "别写成 Manager 自己 ReAct 调所有工具" in sp
+    assert "增强版 bullet" in sp
     # 追问攻具体设计
     assert "为什么唯一写者" in sop and "interrupt/resume" in sop
+
+
+def test_detect_resume_language():
+    from learnforge.agents.diagnosis.resume import detect_resume_language
+    assert detect_resume_language("动态主Agent编排：设计以 Manager 为核心的分层架构") == "zh"
+    assert detect_resume_language("Designed a layered Manager-centric agent orchestration") == "en"
+
+
+def test_rewrite_coverage_backfill():
+    # 模型只给了 2 条改写但有 3 条核心 claim → 用 packet 的 safe_now 兜底补齐到 3。
+    from learnforge.contracts.agents.diagnosis import EvidencePacket
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength
+    d = ResumeDiagnosis(
+        packets=[
+            EvidencePacket(claim="动态主Agent编排设计", claim_type=ClaimType.ARCHITECTURE,
+                           safe_now="设计 Manager 唯一写者的分层 agent-as-tool 编排"),
+            EvidencePacket(claim="记忆与上下文治理分层", claim_type=ClaimType.ARCHITECTURE,
+                           safe_now="设计稳定记忆/会话摘要/handoff summary 的分层机制"),
+            EvidencePacket(claim="技术栈 Python FastAPI", claim_type=ClaimType.TECH_STACK,
+                           support_strength=EvidenceStrength.DOC_SUPPORTED),
+        ],
+        rewritten_bullets=["设计 Manager 唯一写者的分层 agent-as-tool 编排（plan-execute, replan≤2）"],
+    )
+    DiagnosisAgent._ensure_rewrite_coverage(d)
+    core = 2  # 两条非技术栈 claim
+    assert len(d.rewritten_bullets) >= core
+    # 第二条核心 claim 的 safe_now 被补进改写
+    assert any("handoff summary" in b for b in d.rewritten_bullets)
