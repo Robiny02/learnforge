@@ -235,6 +235,7 @@ class DiagnosisAgent(BaseAgent):
                         self._resume_prompt(resume_text, ctx, base),
                         ResumeDiagnosis,
                         max_tokens=4096,
+                        timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
                     )
                 finally:
                     self.skill = prev

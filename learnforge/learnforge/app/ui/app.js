@@ -804,7 +804,7 @@ async function sendPrompt(text, opts = {}) {
   logLine("Input", text);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000); // 120s 客户端超时，避免“永久卡住”
+  const timer = setTimeout(() => controller.abort(), 180000); // 180s 客户端超时（含简历 OCR+深度诊断等慢链路）
   try {
     const response = await fetch("/ui/chat", {
       method: "POST",
@@ -876,7 +876,7 @@ async function sendPrompt(text, opts = {}) {
     chainStatus.textContent = data.status || "ok";
   } catch (err) {
     if (err.name === "AbortError") {
-      addMessage("agent", "请求超时（>120s）。复合链路或模型较慢，可重试或换更简单的问题。", "LearnForge · timeout");
+      addMessage("agent", "请求超时（>180s）。简历 OCR+深度诊断或复合链路较慢，可重试。", "LearnForge · timeout");
       logLine("Timeout", "120s");
       chainStatus.textContent = "timeout";
     } else {

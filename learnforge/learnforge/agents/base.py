@@ -70,6 +70,7 @@ class BaseAgent:
         retrieved: str = "",
         session: str = "",
         images: Optional[List[str]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Optional[T]:
         """skill-driven 结构化调用；不可用/失败返回 None（调用方回退 stub）。
 
@@ -99,6 +100,7 @@ class BaseAgent:
                 system=assembled.cacheable_prefix(),
                 max_tokens=max_tokens,
                 images=images,
+                timeout_s=timeout_s,
             )
             self.last_cost_usd = result.cost_usd
             self.last_tokens = result.tokens

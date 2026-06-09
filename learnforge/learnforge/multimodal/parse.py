@@ -107,6 +107,9 @@ def _to_data_url(data: str, mime: str) -> str:
 # vision OCR 上限：只识别前 N 页，控制成本/延迟（简历通常 1-2 页）。
 _OCR_MAX_PAGES = 4
 _OCR_DPI = 150
+# OCR 用**快**的 vision 模型（gpt-4o，OCR 又快又准），别用慢推理模型（如 claude-sonnet）跑 OCR。
+_OCR_MODEL = __import__("os").environ.get("LF_OCR_MODEL", "openai/gpt-4o")
+_OCR_TIMEOUT_S = 90.0
 
 
 def _parse_pdf(att: Attachment, raw: bytes) -> None:
@@ -192,8 +195,10 @@ def _ocr_pdf_via_vision(raw: bytes, filename: str = "") -> str:
                 "原样输出（保留每一行、每个条目、时间、项目名与换行），不要总结、不要翻译、不要加解释。"
                 "用纯文本/Markdown 输出，按阅读顺序排列。"
             ),
-            model_tier=ModelTier.SONNET,
-            max_tokens=8000,  # 整页简历逐字输出，4000 会把后半截断（"只读了一半"）
+            model_tier=ModelTier.HAIKU,
+            model=_OCR_MODEL,          # 显式快 vision 模型（gpt-4o），避免慢推理模型拖垮 OCR
+            max_tokens=8000,           # 整页简历逐字输出，4000 会把后半截断（"只读了一半"）
+            timeout_s=_OCR_TIMEOUT_S,  # 默认 30s 对多图 OCR 偏短，给足
             images=data_urls,
         )
         return (res.text or "").strip()
