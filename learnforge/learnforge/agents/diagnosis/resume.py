@@ -354,6 +354,8 @@ def render_resume_diagnosis(diag) -> str:
                 src = f"（{('、'.join(sc.evidence_sources))}）" if sc.evidence_sources else ""
                 miss = f" | 缺：{('；'.join(sc.missing_evidence))}" if sc.missing_evidence else ""
                 lines.append(f"   - 🔹 子断言[{sc.support_strength.value}] {sc.text}{src}{miss}")
+                if sc.related_not_supporting:
+                    lines.append(f"       ↳ 相关但不足以支持：{('、'.join(sc.related_not_supporting))}")
             if p.evidence_found:
                 src = f"（{('、'.join(p.evidence_sources))}）" if p.evidence_sources else ""
                 lines.append(f"   - ✅ 已有证据{src}：{('；'.join(p.evidence_found))}")

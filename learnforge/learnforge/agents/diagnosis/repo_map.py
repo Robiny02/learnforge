@@ -36,7 +36,10 @@ _ENTRYPOINT_STEMS = ("main", "index", "__main__", "__init__", "app", "cli", "ser
 _STOP = {"the", "and", "with", "for", "using", "use", "used", "based", "via", "into", "from",
          "that", "this", "system", "design", "designed", "build", "built", "implement",
          "implemented", "support", "develop", "project", "module", "core", "main", "data",
-         "api", "app", "service", "model", "auto", "self", "test", "src", "lib"}
+         "api", "app", "service", "model", "auto", "self", "test", "src", "lib",
+         # 教育/联系方式/通用——不当技术 claim token（防 gpa 之类混入项目分析）
+         "gpa", "绩点", "ielts", "toefl", "雅思", "托福", "cet", "university", "college",
+         "edu", "email", "phone", "github", "https", "http", "com", "www"}
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 _SPLIT_RE = re.compile(r"[/_.\-]+")
 

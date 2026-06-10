@@ -892,3 +892,42 @@ def test_suggested_next_reads_are_concrete(monkeypatch):
     src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
     assert src.suggested_next_reads
     assert all(x.startswith(("search:", "read:")) for x in src.suggested_next_reads)  # 具体对象
+
+
+# --------------------------------------------------------------------------- #
+# 教育/别项目 token 隔离 + related_not_supporting + 核心 bullet 覆盖
+# --------------------------------------------------------------------------- #
+def test_education_and_other_project_tokens_excluded():
+    from learnforge.agents.diagnosis.repo_map import claim_tokens, extract_project_section
+    resume = ("教育：GPA 4.0 雅思 ielts 7.5\n"
+              "秒杀系统 https://github.com/me/seckill\nSpring + Elasticsearch + JWT 高并发\n"
+              "LearnForge https://github.com/me/learnforge\nManager 唯一写者，子 Agent ReAct")
+    sec = extract_project_section(resume, "me/learnforge")
+    t = claim_tokens(sec)
+    # LearnForge 段不允许出现 spring/gpa/jwt/elasticsearch
+    for bad in ("spring", "gpa", "jwt", "elasticsearch", "ielts"):
+        assert bad not in t, f"{bad} 不应混入 LearnForge 项目 token"
+    assert "manager" in t and "react" in t
+
+
+def test_related_not_supporting_render():
+    from learnforge.agents.diagnosis.resume import render_resume_diagnosis
+    from learnforge.contracts.agents.diagnosis import EvidencePacket, SubClaim
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength as ES
+    d = ResumeDiagnosis(packets=[EvidencePacket(
+        claim="记忆与上下文治理", claim_type=ClaimType.ARCHITECTURE, support_strength=ES.DOC_SUPPORTED,
+        subclaims=[SubClaim(text="跨 Agent handoff summary", support_strength=ES.NONE,
+                            related_not_supporting=["agents/mock/handoff.py（只证 mock handoff）"],
+                            missing_evidence=["未读到跨 Agent 的 handoff summary 源码"])])])
+    md = render_resume_diagnosis(d)
+    assert "相关但不足以支持" in md and "mock handoff" in md
+
+
+def test_resume_skill_encodes_semantic_and_coverage_rules():
+    from learnforge.skills.bootstrap import ensure_skills_registered
+    from learnforge.skills.registry import SKILL_REGISTRY
+    ensure_skills_registered()
+    sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
+    # 这些规则进 _resume_prompt（运行时拼），skill SOP 也应含子断言/语义要点
+    sop = sk.load_instructions()
+    assert "子断言拆分" in sop

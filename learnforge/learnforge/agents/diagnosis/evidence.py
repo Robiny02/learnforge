@@ -404,7 +404,8 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
     rounds = 0
     while (rounds < _REACT_MAX_ROUNDS and budget[0] > 0 and _react_enabled()
            and (judgment.get("missing") or next_queries)):
-        # next_queries 允许 judge 的具体化（如 ratelimit），但**剔除别项目 token**与泛化词，再并本 repo gap。
+        # req1：next_queries 里被反复点名的文件/符号（manager.py / skill_registry / allowed_tools /
+        # pathdiff / fallback…）强制纳入检索；剔别项目 token 与泛化词，再并本 repo gap。
         nq = claim_tokens(" ".join(next_queries)) - other - _GENERIC_TOKENS
         q_tokens = (nq | repo_gap) - _GENERIC_TOKENS
         if not q_tokens:

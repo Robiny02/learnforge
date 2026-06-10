@@ -145,9 +145,13 @@ class SubClaim(BaseModel):
     evidence_found: List[str] = Field(
         default_factory=list, description="支持**本子断言**的具体证据（引到文件/片段）。")
     evidence_sources: List[str] = Field(
-        default_factory=list, description="证据来源文件（如 orchestration/manager.py）。")
+        default_factory=list, description="证据来源文件（须**语义匹配本子断言**，如『各 Agent 独立 Skill』→ "
+        "skill_registry/skills 定义文件，不能拿 diagnosis_agent.py 充数）。")
+    related_not_supporting: List[str] = Field(
+        default_factory=list, description="读到但**只相关不足以支持本子断言**的文件（如 handoff.py 只证 mock handoff，"
+        "不足以证明跨 Agent handoff summary）。")
     missing_evidence: List[str] = Field(
-        default_factory=list, description="本子断言仍缺的证据 + 该去哪找。")
+        default_factory=list, description="本子断言仍缺的证据 + 该去哪找（具体文件/符号）。")
 
 
 class EvidencePacket(BaseModel):

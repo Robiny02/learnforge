@@ -48,6 +48,10 @@
       - **按项目 section 取证**：`extract_project_section` 以引用该 repo 的项目段为单位抽 token/当 claims，不整份简历混抽；
         ReAct re-search 的 query = judge next_queries **剔除别项目 token** + 本 repo 证据 gap（`exclude_tokens`，禁串项目）。
       - **一致性校验**（`_reconcile_no_match`）：被任一 subclaim 的 evidence_sources 引用的文件，不再标 read_success_but_no_match。
+        `SubClaim.related_not_supporting` 展示「读到但只相关、不足以支持」的文件（如 handoff.py 只证 mock handoff）；
+        evidence_sources 须**语义匹配**子断言（『各 Agent 独立 Skill』要 skill_registry/skills，不能拿 diagnosis_agent.py）。
+        ReAct re-search 强制纳入 next_queries 反复点名的文件/符号；当前项目段每条核心 bullet 都要有 packet。
+        教育/联系方式 token（gpa/ielts…）在 `_STOP` 剔除，不进项目 token。
       - `suggested_next_reads` 落到具体 `search:<query>` / `read:<path>`（repo 可搜对象），不是抽象产品词。
         top_highlights/most_dangerous 聚焦当前项目，禁串其它项目亮点。
       - 博客/文档走 `web.fetch_url`。受控：最多 `_MAX_READS=6` 个文件/页、单文件截断、只读用户链接及同 repo、
