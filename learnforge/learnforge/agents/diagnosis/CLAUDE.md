@@ -39,7 +39,12 @@
         ③入口信号 ④角色多样性 ⑤预算，选出可解释的 `SelectedFile`（带 score/selected_reason/expected_claims）。
       - `claim_tokens` 从简历动态抽技术 token（CamelCase/snake 拆分，剔停用词）——用候选人自己的术语，通用。
       - 读后做**内容级匹配**（`_content_match`）：`matched_claims`/`extracted_facts`/`read_success_but_no_match`
-        区分『读到』与『支持』——support 不只看文件名命中。
+        区分『读到』与『支持』——support 不只看文件名命中。**泛化 token（agent/learn/act/graph/judge/项目名）
+        只是弱信号，不算强证据**（`_GENERIC_TOKENS` + repo 名）。
+      - **子断言级证据绑定**：每个 EvidencePacket 把 claim 拆成 `subclaims`（如 Manager 唯一写者 / 调度子 agent /
+        受控 ReAct / replan≤2），**逐子断言**单独判 support_strength；某子断言判 code/test_supported 必须**对应具体
+        源码/测试文件被读到**（否则至多 doc_supported）。`packet.support_strength` 由 `_enforce_subclaim_support`
+        取各子断言**最弱项**（不因某子点有代码就整条 code_supported）。top_highlights 聚焦当前项目，禁串其它项目亮点。
       - 博客/文档走 `web.fetch_url`。受控：最多 `_MAX_READS=6` 个文件/页、单文件截断、只读用户链接及同 repo、
         不做任意互联网搜索、URL/文件缓存、失败记 reason 并继续。
     - 触发：`should_deep_mine`（有外链或 `diagnose_resume(deep=True)`）。**PAT 失效(401) 自动退公开访问**。

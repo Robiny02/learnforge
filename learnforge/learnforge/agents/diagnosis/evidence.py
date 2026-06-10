@@ -56,6 +56,10 @@ _RANK_MODEL = os.environ.get("LF_REPO_RANK_MODEL", "openai/gpt-4o-mini")  # 排�
 # URL/通用噪声 token：判定 claim 是否被支持时不算它们。
 _NOISE_TOKENS = {"github", "https", "http", "com", "www", "git", "io", "org", "net",
                  "resume", "claim", "tools", "code", "src", "lib", "test", "tests"}
+# 泛化 token（弱相关信号）：命中它们**不算强证据/不进 extracted_fact**——到处都有，证明不了具体实现。
+_GENERIC_TOKENS = {"agent", "agents", "learn", "learning", "act", "graph", "judge", "system",
+                   "module", "core", "main", "app", "api", "service", "model", "data", "util",
+                   "utils", "common", "base"} | _NOISE_TOKENS
 
 
 def _react_enabled() -> bool:
@@ -137,10 +141,16 @@ def _gh_call(fn, args: Dict) -> Dict:
                 os.environ[k] = v
 
 
-def _content_match(content: str, expected: List[str]) -> Tuple[List[str], List[str]]:
-    """读到文件后做**内容级**匹配（不只看文件名）：返回 (命中的 token, 短证据片段)。"""
+def _content_match(content: str, expected: List[str],
+                   generic: Optional[set] = None) -> Tuple[List[str], List[str]]:
+    """读到文件后做**内容级**匹配：返回 (命中的**强**token, 短证据片段)。
+
+    **泛化 token（agent/learn/act/graph/judge/项目名等）只是弱信号，不算强证据、不进 facts**——
+    它们到处都有，证明不了具体子断言。
+    """
+    gen = generic or _GENERIC_TOKENS
     low = (content or "").lower()
-    matched = [t for t in expected if t.lower() in low]
+    matched = [t for t in expected if t.lower() in low and t.lower() not in gen]  # 剔泛化
     facts: List[str] = []
     if matched:
         for line in (content or "").splitlines():
@@ -303,6 +313,8 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
         return blocks, labels
     matched_all: set = set()
     cache: Dict[str, Optional[str]] = {}  # path → content（缓存，避免重复网络读）
+    # 强证据时还要剔除**项目名**（如 learnforge）——它出现在所有路径/文件里，不算具体证据。
+    repo_generic = _GENERIC_TOKENS | claim_tokens(repo.replace("/", " "))
 
     def _fetch(path: str) -> Optional[str]:
         """读一个文件（缓存 + 计预算）。返回内容；失败/超预算 → None。"""
@@ -321,8 +333,9 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
         if reason_prefix:
             sel.selected_reason = reason_prefix + sel.selected_reason
         sel.read_success = True
-        sel.matched_claims, sel.extracted_facts = _content_match(content, sel.expected_claims or list(tokens))
-        sel.read_success_but_no_match = not sel.matched_claims  # 读到≠支持
+        sel.matched_claims, sel.extracted_facts = _content_match(
+            content, sel.expected_claims or list(tokens), generic=repo_generic)
+        sel.read_success_but_no_match = not sel.matched_claims  # 读到≠支持（仅泛化命中也算未命中）
         matched_all.update(sel.matched_claims)
         blocks.append(f"[github:{repo}/{sel.path}｜{sel.evidence_kind}]\n{str(content)[:_PER_SOURCE_BUDGET]}")
         labels.append(f"github:{repo}/{sel.path}")
@@ -341,7 +354,7 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
     readme_sel = SelectedFile(path="README.md", role="doc", evidence_kind="doc", score=99.0,
                               selected_reason="SOP 入口：GitHub 指定的仓库说明", read_success=True)
     readme_sel.matched_claims, readme_sel.extracted_facts = _content_match(
-        summary.get("readme_excerpt") or "", list(tokens))
+        summary.get("readme_excerpt") or "", list(tokens), generic=repo_generic)
     readme_sel.read_success_but_no_match = not readme_sel.matched_claims
     matched_all.update(readme_sel.matched_claims)
     src.selected_files.append(readme_sel)

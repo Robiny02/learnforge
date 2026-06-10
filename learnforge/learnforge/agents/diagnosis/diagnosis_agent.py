@@ -262,7 +262,8 @@ class DiagnosisAgent(BaseAgent):
                     if not out.evidence_sources_used:
                         out.evidence_sources_used = list(evidence.get("sources") or [])
                     out.external_sources = list(evidence.get("external_sources") or [])
-                    self._ensure_rewrite_coverage(out)  # 每条核心 claim 至少一条改写（req4）
+                    self._enforce_subclaim_support(out)  # packet 支持度取子断言最弱项
+                    self._ensure_rewrite_coverage(out)  # 每条核心 claim 至少一条改写
                     result = out
                 else:
                     import logging
@@ -301,6 +302,21 @@ class DiagnosisAgent(BaseAgent):
             return mine_project_evidence(resume_text, recall_fn=_recall, deep=deep)
         except Exception:  # noqa: BLE001 - 挖掘失败不阻断诊断
             return {"corpus": "", "sources": [], "repos": [], "external_sources": []}
+
+    @staticmethod
+    def _enforce_subclaim_support(out: ResumeDiagnosis) -> None:
+        """req1：packet.support_strength = 各 subclaim 的**最弱项**（有 subclaims 时确定性回收）。
+
+        避免某个子点有代码证据就把整条 claim 上调成 code_supported。
+        """
+        from ...contracts.enums import EvidenceStrength as ES
+
+        order = {ES.NONE: 0, ES.DOC_SUPPORTED: 1, ES.CODE_SUPPORTED: 2,
+                 ES.TEST_SUPPORTED: 3, ES.RUNTIME_SUPPORTED: 4}
+        for p in out.packets:
+            if p.subclaims:
+                p.support_strength = min((sc.support_strength for sc in p.subclaims),
+                                         key=lambda s: order.get(s, 0))
 
     @staticmethod
     def _ensure_rewrite_coverage(out: ResumeDiagnosis) -> None:
@@ -373,10 +389,17 @@ class DiagnosisAgent(BaseAgent):
             "**每条核心 claim（非技术栈）都要有对应的 rewritten_bullet——诊断了 N 条就至少给 N 条改写**。\n"
             "原则：只有在指出『哪个 claim 缺什么证据、去哪个文件/测试/trace 找、能支撑什么表达』之后，"
             "才说需补证据；否则优先挖项目特异的工程亮点，不要泛泛输出 evidence_gap。\n"
-            "【格式硬约束，必须遵守】overall_verdict 与 summary 各 ≤3 句，**不要把整篇报告写进任何单个字段**；"
-            "逐条分析一律放进结构化 packets，不要在 overall_verdict 里写『各条点评 ①②③』。"
-            "只挖最重要的 4-6 条项目/实习 bullet（packets ≤6）；每个 packet 的每个字段简短"
-            "（列表项 ≤3 条、每句精炼），保证整体 JSON 完整不被截断。"
+            "【子断言级证据绑定，必须遵守】每个 packet 把 claim 拆成 2-4 条 subclaims，**逐子断言**单独绑定"
+            "evidence 与 support_strength。例『动态主 Agent 编排』拆：『Manager 唯一写者』『Manager 调度 "
+            "QA/Diagnosis/Planning/Mock』『子 Agent 经受控 ReAct 调工具』『replan≤2』。"
+            "**packet.support_strength 取各 subclaim 的最弱项**——不能因某个子点有代码就把整条判 code_supported。\n"
+            "【证据要落到具体文件】某子断言只有当**对应的具体源码/测试文件确实被读到**（见上方证据来源）才可判 "
+            "code/test_supported；如『Manager 唯一写者』需读到 orchestration/manager.py，否则只 README/CLAUDE.md 提到→"
+            "最多 doc_supported。**泛化词（agent/learn/act/graph/judge/项目名）只是弱信号，不能当证据**。\n"
+            "【聚焦项目，禁串项目】top_highlights/most_dangerous 必须基于**当前这个项目**的 claim 与其证据；"
+            "简历里若有别的项目，**不要把另一个项目的高并发/缓存一致性等亮点混进来**。\n"
+            "【格式硬约束】overall_verdict 与 summary 各 ≤3 句，**不要把整篇报告写进任何单个字段**；逐条分析放进"
+            " packets；只挖最重要的 4-6 条项目/实习 bullet（packets ≤6）；每字段简短（列表 ≤3 条），保证 JSON 不截断。"
         )
 
     # ----------------------------------------------------------- 段① events

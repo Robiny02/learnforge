@@ -132,16 +132,35 @@ class ExternalSource(BaseModel):
     )
 
 
+class SubClaim(BaseModel):
+    """一条 claim 拆出的**子断言**，**单独**绑定证据与支持度。
+
+    例：『动态主 Agent 编排』可拆成「Manager 唯一写者」「Manager 调度 QA/Diagnosis/Planning/Mock」
+    「子 Agent 经受控 ReAct 调工具」「replan≤2」——每条单独判 support_strength，互不影响。
+    """
+
+    text: str = Field(description="子断言原文（一个可独立验证的点）。")
+    support_strength: EvidenceStrength = Field(
+        default=EvidenceStrength.NONE, description="**本子断言**的证据来源强度，不受同 claim 其它子断言影响。")
+    evidence_found: List[str] = Field(
+        default_factory=list, description="支持**本子断言**的具体证据（引到文件/片段）。")
+    evidence_sources: List[str] = Field(
+        default_factory=list, description="证据来源文件（如 orchestration/manager.py）。")
+    missing_evidence: List[str] = Field(
+        default_factory=list, description="本子断言仍缺的证据 + 该去哪找。")
+
+
 class EvidencePacket(BaseModel):
     """单条 claim 的项目级证据包（项目拷打器核心）。
 
-    诊断前先为每条 claim 绑定这份证据包：它属于什么类型、项目材料里有何证据、强度如何、
-    缺什么证据（且该去哪找）、背后真正能打的技术亮点、面试官会怎么深挖、现在能安全怎么写、
-    补证据后能更强怎么写。
+    诊断前先为每条 claim 拆 subclaims 并**逐子断言**绑定证据；claim 级 support_strength 取各子断言
+    的**最弱项**（不能因某个子点有代码证据就把整条判 code_supported）。
     """
 
     claim: str = Field(description="简历原句/bullet。")
     claim_type: ClaimType
+    subclaims: List[SubClaim] = Field(
+        default_factory=list, description="拆出的子断言，逐条单独绑定证据/支持度（req：子断言级评估）。")
     technical_highlight: str = Field(
         default="", description="这条 claim 背后真正能打的工程亮点（项目特异，不是套话）。"
     )

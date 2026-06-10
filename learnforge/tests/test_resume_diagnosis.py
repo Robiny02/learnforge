@@ -741,3 +741,67 @@ def test_deep_loop_judge_and_suggested_next_reads(monkeypatch):
     assert any(f.read_success and f.matched_claims for f in src.selected_files)  # 有 supported
     # ReAct 据 next_queries 重搜读到 ratelimit
     assert any("ratelimit" in f.path for f in src.selected_files)
+
+
+# --------------------------------------------------------------------------- #
+# 子断言级证据 + generic 弱信号 + 跨项目隔离
+# --------------------------------------------------------------------------- #
+def test_content_match_ignores_generic_tokens():
+    from learnforge.agents.diagnosis.evidence import _content_match, _GENERIC_TOKENS
+    # 只命中泛化词 → 不算强证据（matched 空，facts 空）
+    m, f = _content_match("class Agent: pass  # learn graph judge",
+                          ["agent", "learn", "graph", "judge"], generic=_GENERIC_TOKENS)
+    assert m == [] and f == []
+    # 项目名也剔除
+    m2, _ = _content_match("learnforge core", ["learnforge"], generic=_GENERIC_TOKENS | {"learnforge"})
+    assert m2 == []
+    # 具体 token 仍命中
+    m3, _ = _content_match("redis lua ratelimit", ["redis", "lua"], generic=_GENERIC_TOKENS)
+    assert set(m3) == {"redis", "lua"}
+
+
+def test_enforce_subclaim_support_takes_weakest():
+    from learnforge.contracts.agents.diagnosis import EvidencePacket, SubClaim
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength as ES
+    pkt = EvidencePacket(claim="动态主Agent编排", claim_type=ClaimType.ARCHITECTURE,
+                         support_strength=ES.CODE_SUPPORTED,
+                         subclaims=[
+                             SubClaim(text="Manager 唯一写者", support_strength=ES.CODE_SUPPORTED),
+                             SubClaim(text="replan≤2", support_strength=ES.NONE),  # 无证据
+                         ])
+    d = ResumeDiagnosis(packets=[pkt])
+    DiagnosisAgent._enforce_subclaim_support(d)
+    # 某子点有代码 ≠ 整条 code_supported；取最弱 → none
+    assert d.packets[0].support_strength == ES.NONE
+
+
+def test_subclaim_schema_roundtrip_and_render():
+    from learnforge.agents.diagnosis.resume import render_resume_diagnosis
+    from learnforge.contracts.agents.diagnosis import EvidencePacket, SubClaim
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength as ES
+    d = ResumeDiagnosis(
+        jd_fit=JDFitVerdict.STRONG, overall_verdict="ok",
+        packets=[EvidencePacket(
+            claim="动态主Agent编排", claim_type=ClaimType.ARCHITECTURE, support_strength=ES.DOC_SUPPORTED,
+            subclaims=[
+                SubClaim(text="Manager 唯一写者", support_strength=ES.CODE_SUPPORTED,
+                         evidence_sources=["orchestration/manager.py"]),
+                SubClaim(text="replan≤2", support_strength=ES.NONE,
+                         missing_evidence=["未读到 replan 相关源码"])])])
+    # JSON 往返
+    r = ResumeDiagnosis.model_validate_json(d.model_dump_json())
+    assert r.packets[0].subclaims[1].text == "replan≤2"
+    md = render_resume_diagnosis(d)
+    assert "子断言[code_supported] Manager 唯一写者" in md
+    assert "子断言[none] replan≤2" in md and "未读到 replan" in md
+
+
+def test_resume_skill_encodes_subclaim_and_focus_rules():
+    from learnforge.skills.bootstrap import ensure_skills_registered
+    from learnforge.skills.registry import SKILL_REGISTRY
+    ensure_skills_registered()
+    sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
+    sop = sk.load_instructions()
+    assert "子断言拆分" in sop and "取各 subclaim 最弱项" in sop
+    assert "泛化词" in sop and "项目名" in sop  # generic 弱信号
+    assert "orchestration/manager.py" in sop   # code_supported 需具体文件

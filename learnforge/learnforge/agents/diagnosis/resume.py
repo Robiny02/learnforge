@@ -336,6 +336,10 @@ def render_resume_diagnosis(diag) -> str:
             lines.append(f"**{i}. [{p.claim_type.value}/证据{p.support_strength.value}]** {p.claim}")
             if p.technical_highlight:
                 lines.append(f"   - 💡 亮点：{p.technical_highlight}")
+            for sc in p.subclaims:  # 子断言级证据（每条单独的支持度）
+                src = f"（{('、'.join(sc.evidence_sources))}）" if sc.evidence_sources else ""
+                miss = f" | 缺：{('；'.join(sc.missing_evidence))}" if sc.missing_evidence else ""
+                lines.append(f"   - 🔹 子断言[{sc.support_strength.value}] {sc.text}{src}{miss}")
             if p.evidence_found:
                 src = f"（{('、'.join(p.evidence_sources))}）" if p.evidence_sources else ""
                 lines.append(f"   - ✅ 已有证据{src}：{('；'.join(p.evidence_found))}")
