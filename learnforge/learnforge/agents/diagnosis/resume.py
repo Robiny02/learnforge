@@ -307,16 +307,21 @@ def render_resume_diagnosis(diag) -> str:
                 lines.append(f"- ❌ {s.kind.value}: {s.url} —— 未读取（{s.reason or s.status}）")
                 continue
             lines.append(f"- {s.kind.value}: {s.url}")
-            if s.selected_files:
-                for f in s.selected_files:
-                    mark = "✅" if f.read_success else "⚠️"
-                    note = ""
-                    if f.read_success and f.matched_claims:
-                        note = f" → 命中 {('、'.join(f.matched_claims[:4]))}"
-                    elif f.read_success_but_no_match:
-                        note = " → 读到但未命中 claim（不据此判支持）"
-                    lines.append(f"    - {mark} [{f.role}/{f.evidence_kind}] `{f.path}`：{f.selected_reason}{note}")
-            elif s.items_read:
+            supported = [f for f in s.selected_files if f.read_success and f.matched_claims]
+            no_match = [f for f in s.selected_files if f.read_success_but_no_match]
+            if supported:
+                lines.append("    - ✅ selected_and_supported（读到且支持 claim）：")
+                for f in supported:
+                    lines.append(f"        - [{f.role}/{f.evidence_kind}] `{f.path}` → 支持 "
+                                 f"{('、'.join(f.matched_claims[:4]))}（{f.selected_reason}）")
+            if no_match:
+                lines.append("    - ⚠️ read_success_but_no_match（读到但未命中 claim，不据此判支持）：")
+                for f in no_match:
+                    lines.append(f"        - [{f.role}] `{f.path}`")
+            if s.suggested_next_reads:
+                lines.append(f"    - 🔎 suggested_next_reads（仍缺证据，建议继续搜/读）："
+                             f"{('、'.join(s.suggested_next_reads))}")
+            if not s.selected_files and s.items_read:
                 lines.append(f"    - 读取 {('、'.join(s.items_read))}")
         lines.append("")
     elif diag.evidence_sources_used:

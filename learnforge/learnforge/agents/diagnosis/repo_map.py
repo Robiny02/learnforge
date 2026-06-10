@@ -232,7 +232,7 @@ def select_files(repo_map: RepoMap, tokens: Set[str], budget: int = 5,
         if cands:
             _add(cands[0], 0.5, f"覆盖{label}类型（多样性）", [])
 
-    # 4) 还有预算 → 用最相关的剩余文件填满（不限角色）。
+    # 3.5) 还有预算 → 用最相关的剩余文件填满（不限角色）。
     if len(selections) < budget:
         rest = []
         for f in repo_map.files:
@@ -247,3 +247,46 @@ def select_files(repo_map: RepoMap, tokens: Set[str], budget: int = 5,
             if len(selections) >= budget:
                 break
     return selections[:budget]
+
+
+def search_repo(repo_map: RepoMap, query_tokens: Set[str], exclude_paths: Set[str],
+                k: int = 2) -> List[SelectedFile]:
+    """在 repo map 里按 next_queries 的 token 重新检索候选（排除已读），供 ReAct 追读。"""
+    exclude = exclude_paths or set()
+    cands = select_files(repo_map, query_tokens, budget=k + len(exclude) + 4, deep=True)
+    return [c for c in cands if c.path not in exclude][:k]
+
+
+# 轻量预览：抽 import/class/def/heading/config-key，不塞全文给 reranker。
+_SIG_RE = re.compile(r"^\s*(import |from |class |def |async def |func |public |private |"
+                     r"export |interface |type |struct |fn |func\()", re.IGNORECASE)
+_CFG_KEY_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]{2,40})\s*[:=]")
+
+
+def file_preview(path: str, content: str, limit: int = 500) -> str:
+    """为候选文件抽轻量预览（结构信号），供 reranker 在不读全文的前提下判断相关性。"""
+    role = infer_role(path)
+    lines = (content or "").splitlines()
+    sig: List[str] = []
+    if role == "doc":
+        for ln in lines:
+            s = ln.strip()
+            if s.startswith("#") and len(s) < 120:           # markdown heading
+                sig.append(s)
+            if len(sig) >= 10:
+                break
+    elif role == "config":
+        for ln in lines:
+            m = _CFG_KEY_RE.match(ln)
+            if m:
+                sig.append(m.group(1))                        # 顶层 config key
+            if len(sig) >= 14:
+                break
+    else:  # source/test/example/script/unknown
+        for ln in lines:
+            if _SIG_RE.match(ln):
+                sig.append(ln.strip()[:110])                  # import/class/def 签名
+            if len(sig) >= 10:
+                break
+    preview = " | ".join(sig)
+    return (preview or (content or "")[:limit]).strip()[:limit]

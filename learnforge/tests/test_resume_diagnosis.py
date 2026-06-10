@@ -654,3 +654,90 @@ def test_rag_loop_respects_budget(monkeypatch):
     read = [f for f in src.selected_files if f.read_success]
     assert len(read) <= 1 + EV._RAG_READ_PER_REPO + 2  # README + rerank + ≤1 轮 react×2，受控
     assert any(f.path == "README.md" for f in src.selected_files)  # SOP 入口先读
+
+
+# --------------------------------------------------------------------------- #
+# 增强：claim-level judge / preview rerank / re-search react / 输出分类
+# --------------------------------------------------------------------------- #
+def test_file_preview_extracts_signals():
+    from learnforge.agents.diagnosis.repo_map import file_preview
+    assert "class Manager:" in file_preview("m.py", "import os\nclass Manager:\n  def route(self):pass")
+    assert "## Architecture" in file_preview("r.md", "# T\n## Architecture\nbody")
+    assert "redis" in file_preview("c.yaml", "redis:\n  host: x\njwt_secret: y")
+
+
+def test_rerank_listing_includes_preview():
+    import learnforge.agents.diagnosis.evidence as EV
+    c = _mk_sel("src/auth.py", hits=["jwt"])
+    c.preview = "class JwtFilter: | def verify(self): pass"
+    assert "preview:class JwtFilter" in EV._candidate_listing([c])
+
+
+def test_judge_claim_support_fallback_without_llm(monkeypatch):
+    import learnforge.agents.diagnosis.evidence as EV
+    monkeypatch.setattr(llm_client.LLM, "available", False)  # 无 LLM → token-level 兜底
+    j = EV.judge_claim_support("用 Redis 缓存", [("x.py", "source", [], [])],
+                               tokens={"redis", "cache", "github"}, matched={"cache"})
+    assert "redis" in j["next_queries"]      # 未命中 → 进 next_queries
+    assert "cache" not in j["next_queries"]   # 已命中剔除
+    assert "github" not in j["next_queries"]  # 噪声剔除
+
+
+def test_judge_claim_support_uses_llm(monkeypatch):
+    import learnforge.agents.diagnosis.evidence as EV
+
+    def fake_cs(**kw):
+        schema = kw["schema"]
+        obj = schema(supported=["用了 Redis"], missing=["高并发未证实"],
+                     next_queries=["ratelimit", "lua"])
+
+        class _R:
+            cost_usd = 0.0
+            from learnforge.contracts.message import TokenUsage
+            tokens = TokenUsage()
+        return obj, _R()
+
+    monkeypatch.setattr(llm_client.LLM, "available", True)
+    monkeypatch.setattr(llm_client.LLM, "complete_structured", fake_cs)
+    j = EV.judge_claim_support("claims", [("x.py", "source", ["redis"], ["redis code"])],
+                               tokens={"redis"}, matched={"redis"})
+    assert j["missing"] == ["高并发未证实"] and "ratelimit" in j["next_queries"]
+
+
+def test_search_repo_re_search_excludes_read():
+    from learnforge.agents.diagnosis.repo_map import build_repo_map, search_repo, claim_tokens
+    rm = build_repo_map("a/b", {"repo": "a/b"},
+                        _fake_tree(("src/ratelimit.py", 800), ("src/lua_script.py", 600),
+                                   ("src/auth.py", 500)))
+    out = search_repo(rm, claim_tokens("ratelimit lua"),
+                      exclude_paths={"src/auth.py"}, k=2)
+    paths = [s.path for s in out]
+    assert "src/ratelimit.py" in paths and "src/auth.py" not in paths  # 重搜 + 排除已读
+
+
+def test_deep_loop_judge_and_suggested_next_reads(monkeypatch):
+    # 端到端（离线 github + mocked judge）：emit 证据 + claim-level judge 给 suggested_next_reads。
+    import learnforge.agents.diagnosis.evidence as EV
+    from learnforge.tools.mcp.servers import github
+    monkeypatch.setattr(EV, "_in_pytest", lambda: False)
+    monkeypatch.setattr(EV, "judge_claim_support",
+                        lambda *a, **k: {"supported": ["redis"], "missing": ["高并发"],
+                                         "next_queries": ["ratelimit", "lua"]})
+
+    def _resp(d):
+        import json
+        return {"content": [{"type": "text", "text": json.dumps(d)}], "isError": False}
+
+    monkeypatch.setattr(github, "repo_summary", lambda a: _resp(
+        {"repo": "a/b", "languages": {"Python": 1}, "readme_excerpt": "redis cache"}))
+    monkeypatch.setattr(github, "list_tree", lambda a: _resp(_fake_tree(
+        ("src/redis_cache.py", 800), ("src/ratelimit.py", 700), ("tests/test_cache.py", 300))))
+    monkeypatch.setattr(github, "read_file", lambda a: _resp(
+        {"path": a["path"], "content": "redis ratelimit code"}))
+
+    ev = EV.mine_project_evidence("用 Redis 缓存，高并发限流 https://github.com/a/b", deep=True)
+    src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
+    assert src.suggested_next_reads                      # judge 输出仍缺证据 → 建议继续
+    assert any(f.read_success and f.matched_claims for f in src.selected_files)  # 有 supported
+    # ReAct 据 next_queries 重搜读到 ratelimit
+    assert any("ratelimit" in f.path for f in src.selected_files)

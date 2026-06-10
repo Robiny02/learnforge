@@ -25,10 +25,14 @@
     - **fast**（默认，无外链）：repo `repo_summary`(README/语言) + CLAUDE.md + 上传材料(`recall origin=attachment`)。
     - **deep**（检测到外链 / `deep=True`）：link extraction → ExternalSource 分类(github_repo/file/dir/
       tech_blog/docs_page/unknown_url) → **Repo-RAG + Reranker + 受控 ReAct 证据循环**（像人读代码，不全量读）：
-      SOP 入口(README/tree) → 召回候选(select_files) → **reranker** 选最相关(快模型 gpt-4o-mini，只看元数据)
-      → 读 top files + 内容抽证据 → 判断 claim 是否被支撑(`_important_unmatched`) → 不足则 **≤1 轮受控 ReAct**
-      追读(`react_next_files`) → 收尾。成本受控：rerank/react 只看路径/角色/命中 token（不读内容）走快模型，
-      单 repo 读取上限 `_RAG_READ_PER_REPO=5` + ReAct ≤2，`LF_REPO_REACT=0` 可关；无 key → 退确定性排序。
+      SOP 入口(README/tree) → 召回候选(select_files) → 取**轻量 preview**(`file_preview`:class/def/import/
+      heading/config-key，不塞全文) → **reranker** 看 path/role/命中 token/preview 选最相关(快模型 gpt-4o-mini)
+      → emit top-K 作证据 + 内容抽证据 → **claim-level `judge_claim_support`**(哪些子断言已被 doc/code/test 支持、
+      哪些缺 + next_queries) → 不足则 **≤1 轮受控 ReAct**：据 next_queries `search_repo` **重搜** repo map 再读
+      ≤2 文件 → 收尾。成本受控：rerank/judge/react 只看元数据/片段走快模型，preview 池 `_PREVIEW_POOL=6`、
+      emit `_RAG_READ_PER_REPO=5`、ReAct ≤2、总读取 `_MAX_READS=9`，`LF_REPO_REACT=0` 可关；无 key → 退确定性。
+      输出三分类：`selected_and_supported`(读到且命中 claim) / `read_success_but_no_match`(读到但未命中) /
+      `suggested_next_reads`(judge 判仍缺证据的关键词/候选)。
       - `repo_map.py`：`build_repo_map(repo, summary, tree)` 把真实仓库树解析成带角色的 `FileEntry`
         （doc/source/test/config/example/script/unknown，`infer_role` 结构化判定，排噪声目录）；
         `select_files(repo_map, claim_tokens, budget, deep)` 综合 ①token 与 path/filename 相关性 ②文档重要性

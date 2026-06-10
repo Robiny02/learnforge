@@ -94,6 +94,7 @@ class SelectedFile(BaseModel):
     evidence_kind: str = Field(default="", description="证据类型：doc/code/test/config。")
     score: float = Field(default=0.0, description="选择分数（越高越相关）。")
     selected_reason: str = Field(default="", description="为什么选它（可解释）。")
+    preview: str = Field(default="", description="轻量预览（class/def/import/heading/config keys），供 rerank。")
     expected_claims: List[str] = Field(
         default_factory=list, description="预期它能支持的 claim token（选择时的依据）。"
     )
@@ -125,6 +126,9 @@ class ExternalSource(BaseModel):
     )
     selected_files: List[SelectedFile] = Field(
         default_factory=list, description="repo map 动态选中的文件及其可解释选择依据/读取结果。"
+    )
+    suggested_next_reads: List[str] = Field(
+        default_factory=list, description="claim-level judge 认为仍缺证据、建议继续搜/读的关键词或文件。"
     )
 
 
