@@ -28,12 +28,25 @@ from ..mock import interview_skill as IS
 _RESUME_CUES = ("简历", "履历", "resume", "cv", "résumé")
 # 文件名像简历的线索（自动从附件挑出简历文档）。
 _RESUME_FILENAME_CUES = ("简历", "履历", "resume", "cv", "résumé")
+# 项目分析意图：「项目/仓库/github」+「分析/诊断/拷打…」=简历级项目诊断（≠学习弱点诊断）。
+_PROJECT_CUES = ("项目", "仓库", "repo", "github", "工程")
+_ANALYZE_CUES = ("分析", "诊断", "拷打", "评估", "审视", "看看", "review", "复盘", "优化", "改写")
+_GITHUB_LINK_RE = re.compile(r"github\.com[/:][\w.\-]+/[\w.\-]+", re.IGNORECASE)
 
 
 def looks_like_resume_request(text: Optional[str]) -> bool:
-    """用户文本是否在要求诊断简历（区别于学习弱点诊断）。"""
+    """用户文本是否在要求诊断简历/项目（区别于学习弱点诊断）。
+
+    触发：①简历关键词；②『项目/仓库/github』+『分析/诊断/拷打…』（如『分析我的项目』）；③出现 GitHub 链接。
+    """
     low = (text or "").lower()
-    return any(cue in low for cue in _RESUME_CUES)
+    if any(cue in low for cue in _RESUME_CUES):
+        return True
+    if _GITHUB_LINK_RE.search(low):
+        return True
+    if any(p in low for p in _PROJECT_CUES) and any(a in low for a in _ANALYZE_CUES):
+        return True
+    return False
 
 
 _INTENT_RE = re.compile(r"(?:求职意向|意向岗位|求职方向|目标岗位|应聘岗位)\s*[:：]\s*(.+)")

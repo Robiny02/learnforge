@@ -805,3 +805,22 @@ def test_resume_skill_encodes_subclaim_and_focus_rules():
     assert "子断言拆分" in sop and "取各 subclaim 最弱项" in sop
     assert "泛化词" in sop and "项目名" in sop  # generic 弱信号
     assert "orchestration/manager.py" in sop   # code_supported 需具体文件
+
+
+def test_project_analysis_intent_routes_to_project_diagnosis():
+    # 「分析我的项目 / github 链接」应判为简历级项目诊断，而非学习弱点诊断。
+    from learnforge.agents.diagnosis.resume import looks_like_resume_request
+    assert looks_like_resume_request("重新分析我的项目")
+    assert looks_like_resume_request("分析我的项目")
+    assert looks_like_resume_request("看看 https://github.com/a/b")
+    assert looks_like_resume_request("诊断我的简历")
+    assert not looks_like_resume_request("我哪里比较薄弱")   # 学习弱点诊断，不劫持
+    assert not looks_like_resume_request("制定学习计划")
+
+
+def test_dispatch_shortcuts_project_analysis_to_diagnosis():
+    from learnforge.intent.dispatch import Dispatcher
+    d = Dispatcher()
+    assert d.route("重新分析我的项目").capability == "diagnosis"
+    assert d.route("分析我的项目 github.com/a/b").capability == "diagnosis"
+    assert d.route("什么是乐观锁").capability == "qa"        # 概念问句不受影响
