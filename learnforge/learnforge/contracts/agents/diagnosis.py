@@ -170,7 +170,10 @@ class EvidencePacket(BaseModel):
     evidence_sources: List[str] = Field(
         default_factory=list, description="证据来源定位：如 CLAUDE.md / orchestration/manager.py / tests/。"
     )
-    support_strength: EvidenceStrength = EvidenceStrength.NONE
+    support_strength: EvidenceStrength = Field(
+        default=EvidenceStrength.NONE, description="整条 claim 的综合支持度 = 各 subclaim 最弱项。")
+    support_summary: str = Field(
+        default="", description="混合支持度概览（如 code×1/doc×2/none×1，最弱=none），别只显示最弱项。")
     missing_evidence: List[str] = Field(
         default_factory=list, description="缺什么证据 + 该去哪个文件/测试/trace/日志里找（非泛泛『补证据』）。"
     )

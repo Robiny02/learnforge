@@ -59,6 +59,37 @@ def claim_tokens(text: str) -> Set[str]:
     return _split_tokens(text)
 
 
+def extract_project_section(resume_text: str, repo: str) -> str:
+    """抽出**引用该 repo 的那一段项目描述**（按项目分块，不整份简历混抽）。
+
+    锚定到该 repo 的链接/名所在行（标题通常与 URL 同行），**向后**扩到下一个 github 链接/空行为止
+    （bullets 跟在项目标题后）。只在紧邻的前一行像"独立标题"时才纳入一行。找不到锚 → 退回全文。
+    """
+    lines = (resume_text or "").splitlines()
+    name = repo.split("/")[-1].lower()
+    repo_low = repo.lower()
+    # 优先锚到含**本 repo 链接**的行；否则锚到提到 repo 名的行。
+    anchor = next((i for i, ln in enumerate(lines)
+                   if "github.com" in ln.lower() and name in ln.lower()), None)
+    if anchor is None:
+        anchor = next((i for i, ln in enumerate(lines)
+                       if repo_low in ln.lower() or (name and name in ln.lower())), None)
+    if anchor is None:
+        return resume_text or ""
+
+    end = anchor
+    while (end + 1 < len(lines) and lines[end + 1].strip()
+           and "github.com" not in lines[end + 1].lower()):
+        end += 1
+    # 仅当前一行是"独立标题"（非空、无链接，且它自己前面是空行/链接行=新项目起点）才纳入。
+    start = anchor
+    if anchor > 0 and lines[anchor - 1].strip() and "github.com" not in lines[anchor - 1].lower():
+        prev2 = lines[anchor - 2] if anchor >= 2 else ""
+        if anchor - 1 == 0 or not prev2.strip():
+            start = anchor - 1
+    return "\n".join(lines[start:end + 1]).strip() or (resume_text or "")
+
+
 def _is_noise(path: str) -> bool:
     segs = path.lower().split("/")
     return any(s in _NOISE_DIRS or s.startswith(".") and s in _NOISE_DIRS for s in segs) \

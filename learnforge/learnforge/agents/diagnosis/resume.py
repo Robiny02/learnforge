@@ -346,7 +346,8 @@ def render_resume_diagnosis(diag) -> str:
     if diag.packets:
         lines.append("### 逐条项目级诊断")
         for i, p in enumerate(diag.packets, 1):
-            lines.append(f"**{i}. [{p.claim_type.value}/证据{p.support_strength.value}]** {p.claim}")
+            mix = f"（{p.support_summary}）" if p.support_summary else ""
+            lines.append(f"**{i}. [{p.claim_type.value}/证据{p.support_strength.value}]{mix}** {p.claim}")
             if p.technical_highlight:
                 lines.append(f"   - 💡 亮点：{p.technical_highlight}")
             for sc in p.subclaims:  # 子断言级证据（每条单独的支持度）

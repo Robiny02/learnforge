@@ -262,7 +262,8 @@ class DiagnosisAgent(BaseAgent):
                     if not out.evidence_sources_used:
                         out.evidence_sources_used = list(evidence.get("sources") or [])
                     out.external_sources = list(evidence.get("external_sources") or [])
-                    self._enforce_subclaim_support(out)  # packet 支持度取子断言最弱项
+                    self._enforce_subclaim_support(out)  # packet 支持度取子断言最弱项 + support_summary
+                    self._reconcile_no_match(out)       # 被 subclaim 引用的文件不再标 no_match（req3）
                     self._ensure_rewrite_coverage(out)  # 每条核心 claim 至少一条改写
                     result = out
                 else:
@@ -305,18 +306,37 @@ class DiagnosisAgent(BaseAgent):
 
     @staticmethod
     def _enforce_subclaim_support(out: ResumeDiagnosis) -> None:
-        """req1：packet.support_strength = 各 subclaim 的**最弱项**（有 subclaims 时确定性回收）。
-
-        避免某个子点有代码证据就把整条 claim 上调成 code_supported。
-        """
+        """packet.support_strength = 各 subclaim **最弱项**；并给 support_summary 展示混合分布（不只显示最弱）。"""
         from ...contracts.enums import EvidenceStrength as ES
+        from collections import Counter
 
         order = {ES.NONE: 0, ES.DOC_SUPPORTED: 1, ES.CODE_SUPPORTED: 2,
                  ES.TEST_SUPPORTED: 3, ES.RUNTIME_SUPPORTED: 4}
         for p in out.packets:
-            if p.subclaims:
-                p.support_strength = min((sc.support_strength for sc in p.subclaims),
-                                         key=lambda s: order.get(s, 0))
+            if not p.subclaims:
+                continue
+            p.support_strength = min((sc.support_strength for sc in p.subclaims),
+                                     key=lambda s: order.get(s, 0))
+            cnt = Counter(sc.support_strength.value for sc in p.subclaims)
+            mix = " / ".join(f"{v}×{k}" for k, v in cnt.most_common())
+            p.support_summary = f"{mix}（最弱={p.support_strength.value}）"
+
+    @staticmethod
+    def _reconcile_no_match(out: ResumeDiagnosis) -> None:
+        """req3：被任一 subclaim 的 evidence_sources 引用的文件，不能再显示为 read_success_but_no_match。"""
+        cited: set = set()
+        for p in out.packets:
+            for sc in p.subclaims:
+                cited.update(sc.evidence_sources)
+            cited.update(p.evidence_sources)
+        cited_base = {c.rsplit("/", 1)[-1] for c in cited if c}
+        for s in out.external_sources:
+            for f in s.selected_files:
+                if not f.read_success_but_no_match:
+                    continue
+                base = f.path.rsplit("/", 1)[-1]
+                if f.path in cited or base in cited_base or any(f.path in c for c in cited):
+                    f.read_success_but_no_match = False  # 已被某 subclaim 当证据 → 不算 no_match
 
     @staticmethod
     def _ensure_rewrite_coverage(out: ResumeDiagnosis) -> None:

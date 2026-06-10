@@ -824,3 +824,71 @@ def test_dispatch_shortcuts_project_analysis_to_diagnosis():
     assert d.route("重新分析我的项目").capability == "diagnosis"
     assert d.route("分析我的项目 github.com/a/b").capability == "diagnosis"
     assert d.route("什么是乐观锁").capability == "qa"        # 概念问句不受影响
+
+
+# --------------------------------------------------------------------------- #
+# 项目 section 隔离 / no_match 一致性 / 具体 next_reads / mixed support 展示
+# --------------------------------------------------------------------------- #
+def test_extract_project_section_isolates_per_project():
+    from learnforge.agents.diagnosis.repo_map import extract_project_section, claim_tokens
+    resume = ("秒杀系统 https://github.com/me/seckill\n用 Redis 扣库存，RocketMQ 异步下单\n"
+              "LearnForge https://github.com/me/learnforge\nManager 唯一写者，子 Agent ReAct 调工具")
+    sec = extract_project_section(resume, "me/learnforge")
+    t = claim_tokens(sec)
+    assert "manager" in t and "react" in t        # 本项目词在
+    assert "redis" not in t and "rocketmq" not in t  # 别项目词不混入（req1）
+
+
+def test_reconcile_no_match_with_subclaim_sources():
+    # req3：被某 subclaim 引用为证据的文件，不能再显示 read_success_but_no_match。
+    from learnforge.contracts.agents.diagnosis import (
+        EvidencePacket, SubClaim, ExternalSource, SelectedFile)
+    from learnforge.contracts.enums import ClaimType, ExternalSourceKind, EvidenceStrength as ES
+    d = ResumeDiagnosis(
+        packets=[EvidencePacket(claim="编排", claim_type=ClaimType.ARCHITECTURE, subclaims=[
+            SubClaim(text="Manager 唯一写者", support_strength=ES.CODE_SUPPORTED,
+                     evidence_sources=["orchestration/manager.py"])])],
+        external_sources=[ExternalSource(
+            url="https://github.com/a/b", kind=ExternalSourceKind.GITHUB_REPO,
+            selected_files=[SelectedFile(path="orchestration/manager.py", read_success=True,
+                                         read_success_but_no_match=True)])])
+    DiagnosisAgent._reconcile_no_match(d)
+    assert not d.external_sources[0].selected_files[0].read_success_but_no_match  # 被引用 → 不再 no_match
+
+
+def test_support_summary_shows_mix():
+    from learnforge.contracts.agents.diagnosis import EvidencePacket, SubClaim
+    from learnforge.contracts.enums import ClaimType, EvidenceStrength as ES
+    d = ResumeDiagnosis(packets=[EvidencePacket(
+        claim="编排", claim_type=ClaimType.ARCHITECTURE, subclaims=[
+            SubClaim(text="a", support_strength=ES.CODE_SUPPORTED),
+            SubClaim(text="b", support_strength=ES.DOC_SUPPORTED),
+            SubClaim(text="c", support_strength=ES.NONE)])])
+    DiagnosisAgent._enforce_subclaim_support(d)
+    p = d.packets[0]
+    assert p.support_strength == ES.NONE                 # 最弱
+    assert "code_supported" in p.support_summary and "none" in p.support_summary  # 混合展示（req5）
+    assert "最弱=none" in p.support_summary
+
+
+def test_suggested_next_reads_are_concrete(monkeypatch):
+    # req4：suggested_next_reads 是 search:<query>/read:<path>，不是抽象产品词。
+    import learnforge.agents.diagnosis.evidence as EV
+    from learnforge.tools.mcp.servers import github
+    monkeypatch.setattr(EV, "_in_pytest", lambda: False)
+    monkeypatch.setattr(EV, "judge_claim_support",
+                        lambda *a, **k: {"supported": [], "missing": ["x"], "next_queries": ["ratelimit"]})
+
+    def _resp(d):
+        import json
+        return {"content": [{"type": "text", "text": json.dumps(d)}], "isError": False}
+
+    monkeypatch.setattr(github, "repo_summary", lambda a: _resp({"repo": "a/b", "readme_excerpt": ""}))
+    monkeypatch.setattr(github, "list_tree", lambda a: _resp(_fake_tree(
+        ("src/ratelimit.py", 800), ("src/redis_cache.py", 700))))
+    monkeypatch.setattr(github, "read_file", lambda a: _resp({"path": a["path"], "content": "x"}))
+
+    ev = EV.mine_project_evidence("用 Redis 缓存，限流 ratelimit https://github.com/a/b", deep=True)
+    src = [s for s in ev["external_sources"] if s.kind.value == "github_repo"][0]
+    assert src.suggested_next_reads
+    assert all(x.startswith(("search:", "read:")) for x in src.suggested_next_reads)  # 具体对象

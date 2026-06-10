@@ -25,6 +25,7 @@ from ...contracts.enums import ExternalSourceKind
 from .repo_map import (
     build_repo_map,
     claim_tokens,
+    extract_project_section,
     file_preview,
     infer_role,
     search_repo,
@@ -191,7 +192,9 @@ def judge_claim_support(claims: str, evidence_items: List[Tuple[str, str, List[s
         f"候选人简历声明：\n{claims[:1500]}\n\n已从仓库收集的证据（含类型 doc/code/test）：\n{listing}\n\n"
         "逐条判断声明的关键子断言：①supported=已被 doc/code/test 证据支持的子断言；"
         "②missing=仍缺证据的子断言（注意 doc/blog 只证『说过』，code/test 才证『做到』）；"
-        "③next_queries=为补 missing 该在仓库里搜的关键词/模块名（3-6 个）。")
+        "③next_queries=为补 missing 该在**本仓库里搜的具体对象**：模块/文件名/类名/函数名/符号"
+        "（如 manager.py、ReactRunner、replan、search_repo），**不要抽象产品词**（如『高并发』『一致性』），"
+        "也不要别的项目的词。给 3-6 个。")
     try:
         from pydantic import BaseModel
 
@@ -296,7 +299,8 @@ def _important_unmatched(tokens: set, matched: set) -> List[str]:
 
 # --------------------------------------------------------------------------- 各类来源取证
 def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[int],
-                      deep: bool = True, claims_text: str = "") -> Tuple[List[str], List[str]]:
+                      deep: bool = True, claims_text: str = "",
+                      exclude_tokens: Optional[set] = None) -> Tuple[List[str], List[str]]:
     """github_repo：Repo-RAG + Reranker + 受控 ReAct 证据循环（像人读代码，不全量读）。
 
     SOP：README/docs/tree（入口）→ 召回候选(select_files) → reranker 选最相关(快模型,只看元数据)
@@ -393,14 +397,19 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
     judgment = judge_claim_support(claims, evidence_items, tokens, matched_all)
     next_queries = judgment.get("next_queries") or []
 
-    # ⑦ 受控 ReAct（≤1 轮）：据 next_queries 在 repo map 里**重新检索**，再挑 1-2 个文件读。
+    # ⑦ 受控 ReAct（≤1 轮）：据 next_queries 在**本 repo** 重新检索（req2：query 严格来自当前 section
+    #    token + 本 repo 证据 gap，剔除别项目词），再挑 1-2 个文件读。
+    repo_gap = set(_important_unmatched(tokens, matched_all))   # 本 repo 当前的证据缺口
+    other = (exclude_tokens or set())                            # 别的项目的 token（req2：禁混入）
     rounds = 0
     while (rounds < _REACT_MAX_ROUNDS and budget[0] > 0 and _react_enabled()
            and (judgment.get("missing") or next_queries)):
-        q_tokens = claim_tokens(" ".join(next_queries)) or _important_unmatched(tokens, matched_all)
+        # next_queries 允许 judge 的具体化（如 ratelimit），但**剔除别项目 token**与泛化词，再并本 repo gap。
+        nq = claim_tokens(" ".join(next_queries)) - other - _GENERIC_TOKENS
+        q_tokens = (nq | repo_gap) - _GENERIC_TOKENS
         if not q_tokens:
             break
-        nxt = search_repo(repo_map, set(q_tokens), read_paths, k=min(_REACT_MAX_FILES, budget[0]))
+        nxt = search_repo(repo_map, q_tokens, read_paths, k=min(_REACT_MAX_FILES, budget[0]))
         if not nxt:
             break
         for sel in nxt:
@@ -410,10 +419,13 @@ def _mine_github_repo(src: ExternalSource, repo: str, tokens: set, budget: List[
                 read_paths.add(sel.path)
         rounds += 1
 
-    # ⑧ 输出区分：仍缺证据 → suggested_next_reads（关键词 + 未读到的候选路径）。
+    # ⑧ req4：suggested_next_reads 落到具体 **repo search query / 文件路径**（不是抽象产品词）。
     if judgment.get("missing"):
-        unread = [c.path for c in pool if c.path not in read_paths][:3]
-        src.suggested_next_reads = list(dict.fromkeys(list(next_queries)[:6] + unread))
+        gap = sorted(((claim_tokens(" ".join(next_queries)) - other) | repo_gap) - _GENERIC_TOKENS)
+        # 用 gap 在 repo map 里找还没读的候选文件路径（具体可读对象）
+        unread_paths = [c.path for c in search_repo(repo_map, set(gap), read_paths, k=3)]
+        src.suggested_next_reads = (
+            [f"search:{q}" for q in gap[:4]] + [f"read:{p}" for p in unread_paths])
     return blocks, labels
 
 
@@ -476,8 +488,15 @@ def mine_project_evidence(
     labels: List[str] = []
     links = extract_links(resume_text)
     repos = extract_repo_urls(resume_text)
-    tokens = claim_tokens(resume_text)  # 简历里的技术 token（动态，无写死映射）
     budget = [_MAX_READS]  # 受控：可读文件/页总预算（list 便于内部递减）
+
+    all_tokens = claim_tokens(resume_text)
+
+    def _section(repo: str):
+        """req1/2：以引用该 repo 的**项目 section** 为单位抽 token / 当 claims；exclude=别项目 token。"""
+        sec = extract_project_section(resume_text, repo)
+        stk = claim_tokens(sec)
+        return stk, sec, (all_tokens - stk)  # (section tokens, section text, other-project tokens)
 
     if allow_network and not _in_pytest():
         if deep:
@@ -489,7 +508,12 @@ def mine_project_evidence(
                 try:
                     if src.kind in (ExternalSourceKind.GITHUB_REPO, ExternalSourceKind.GITHUB_DIR):
                         repo = _repo_from_url(src.url)
-                        b, lb = _mine_github_repo(src, repo, tokens, budget, claims_text=resume_text) if repo else ([], [])
+                        if repo:
+                            stk, sec, excl = _section(repo)
+                            b, lb = _mine_github_repo(src, repo, stk, budget, claims_text=sec,
+                                                      exclude_tokens=excl)
+                        else:
+                            b, lb = [], []
                     elif src.kind == ExternalSourceKind.GITHUB_FILE:
                         b, lb = _mine_github_file(src, budget)
                     else:  # blog / docs / unknown
@@ -502,7 +526,9 @@ def mine_project_evidence(
             for repo in repos:
                 if budget[0] > 0 and not any(repo in lb for lb in labels):
                     src = ExternalSource(url=f"https://github.com/{repo}", kind=ExternalSourceKind.GITHUB_REPO)
-                    b, lb = _mine_github_repo(src, repo, tokens, budget, claims_text=resume_text)
+                    stk, sec, excl = _section(repo)
+                    b, lb = _mine_github_repo(src, repo, stk, budget, claims_text=sec,
+                                              exclude_tokens=excl)
                     blocks += b
                     labels += lb
                     links.append(src)
@@ -510,7 +536,8 @@ def mine_project_evidence(
             # fast：读 README + 自主挑的核心说明文档（不读源码）。
             for repo in repos[:2]:
                 src = ExternalSource(url=f"https://github.com/{repo}", kind=ExternalSourceKind.GITHUB_REPO)
-                b, lb = _mine_github_repo(src, repo, tokens, budget, deep=False)
+                stk, _sec, _excl = _section(repo)
+                b, lb = _mine_github_repo(src, repo, stk, budget, deep=False)
                 blocks += b
                 labels += lb
                 links.append(src)

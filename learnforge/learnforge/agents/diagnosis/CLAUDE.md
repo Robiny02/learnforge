@@ -44,7 +44,12 @@
       - **子断言级证据绑定**：每个 EvidencePacket 把 claim 拆成 `subclaims`（如 Manager 唯一写者 / 调度子 agent /
         受控 ReAct / replan≤2），**逐子断言**单独判 support_strength；某子断言判 code/test_supported 必须**对应具体
         源码/测试文件被读到**（否则至多 doc_supported）。`packet.support_strength` 由 `_enforce_subclaim_support`
-        取各子断言**最弱项**（不因某子点有代码就整条 code_supported）。top_highlights 聚焦当前项目，禁串其它项目亮点。
+        取各子断言**最弱项**，并给 `support_summary` 展示混合分布（如 `2×doc/1×code，最弱=doc`，不只显示最弱）。
+      - **按项目 section 取证**：`extract_project_section` 以引用该 repo 的项目段为单位抽 token/当 claims，不整份简历混抽；
+        ReAct re-search 的 query = judge next_queries **剔除别项目 token** + 本 repo 证据 gap（`exclude_tokens`，禁串项目）。
+      - **一致性校验**（`_reconcile_no_match`）：被任一 subclaim 的 evidence_sources 引用的文件，不再标 read_success_but_no_match。
+      - `suggested_next_reads` 落到具体 `search:<query>` / `read:<path>`（repo 可搜对象），不是抽象产品词。
+        top_highlights/most_dangerous 聚焦当前项目，禁串其它项目亮点。
       - 博客/文档走 `web.fetch_url`。受控：最多 `_MAX_READS=6` 个文件/页、单文件截断、只读用户链接及同 repo、
         不做任意互联网搜索、URL/文件缓存、失败记 reason 并继续。
     - 触发：`should_deep_mine`（有外链或 `diagnose_resume(deep=True)`）。**PAT 失效(401) 自动退公开访问**。
