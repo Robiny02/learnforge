@@ -681,7 +681,11 @@ class ManagerAgent(BaseAgent):
 
     # ---------------- 短期会话记忆（recent 原文 + 压缩摘要，§6b/§6c session 段）----------------
     def load_session_memory(self, session_id: Optional[str]) -> Optional[str]:
-        """渲染会话短期记忆 = 早期压缩摘要 + 最近 N 轮原文（无记录 → None）。best-effort。"""
+        """渲染会话短期记忆 = 固定重要结果(pinned) + 早期压缩摘要 + 最近原文轮（无记录 → None）。
+
+        pinned 置顶（永不压缩的重要结果，全文）；其后是 compaction 折叠出的早期摘要 + 仍保留的
+        最近原文轮。best-effort。
+        """
         if not session_id:
             return None
         try:
@@ -692,6 +696,9 @@ class ManagerAgent(BaseAgent):
                 MEMORY_LOG.record(READ, "加载会话记忆", "无历史，跳过")
                 return None
             parts: List[str] = []
+            pinned = (st.get("active_task") or {}).get("pinned") or []
+            for p in pinned:
+                parts.append(f"[重要结果·固定] 用户：{p.get('user', '')}\n回复：{p.get('reply', '')}")
             if st.get("summary"):
                 parts.append(f"[早期会话摘要] {st['summary']}")
             rounds = st.get("recent_messages") or []
@@ -702,7 +709,7 @@ class ManagerAgent(BaseAgent):
                 return None
             MEMORY_LOG.record(
                 READ, "加载会话记忆",
-                f"{len(rounds)} 轮原文 + {'有' if st.get('summary') else '无'}早期摘要",
+                f"{len(pinned)} 条固定 + {len(rounds)} 轮原文 + {'有' if st.get('summary') else '无'}早期摘要",
             )
             MEMORY_LOG.record(INJECT, "注入会话摘要", "进入 prompt", count=1)
             return "\n".join(parts)
@@ -715,41 +722,190 @@ class ManagerAgent(BaseAgent):
         user_input: str,
         reply: str,
         active_mock: Optional[str] = None,
+        *,
+        important: bool = False,
     ) -> Optional[str]:
-        """本轮收尾：追加一轮原文；超过 N 轮则把溢出轮压成 summary，只留最近 N 轮。返回 summary。"""
+        """本轮收尾：追加一轮原文 → Claude Code 式**会话级 compaction**（按 token 阈值，不按轮数）。
+
+        统计 session context tokens = summary + 最近原文轮（**不含 pinned**）；超
+        SESSION_COMPACTION_THRESHOLD_TOKENS 才把最旧轮逐个折叠进 summary，直到 ≤TARGET，但至少
+        保留 SESSION_MIN_RECENT_ROUNDS 轮。`important=True` 的轮额外存入 **pinned 区**，永不被
+        compaction 折叠、渲染时置顶全文注入（重要结果保护）。返回 summary。
+        """
         if not session_id:
             return None
         try:
-            from ..config import SESSION_RECENT_ROUNDS
+            from ..config import (
+                SESSION_COMPACTION_TARGET_TOKENS,
+                SESSION_COMPACTION_THRESHOLD_TOKENS,
+                SESSION_MAX_PINNED,
+                SESSION_MIN_RECENT_ROUNDS,
+                SESSION_PIN_MAX_CHARS,
+                SESSION_RESUMMARIZE_EVERY,
+            )
             from ..memory.base import MEMORY
+            from ..memory.tokens import count_tokens
+            from ..llm.client import LLM
             from ..storage.repositories import SessionStateRepository
 
             repo = SessionStateRepository(db_path=self._db_path)
             st = repo.get(session_id) or {}
             summary = st.get("summary") or ""
+            task = dict(st.get("active_task") or {})
+            fold_count = int(task.get("fold_count", 0))
+            pinned = list(task.get("pinned") or [])
             rounds = list(st.get("recent_messages") or [])
-            rounds.append({"user": (user_input or "")[:500], "reply": (reply or "")[:500]})
+            new_round = {"user": (user_input or "")[:500], "reply": (reply or "")[:500]}
+            rounds.append(new_round)
 
-            if len(rounds) > SESSION_RECENT_ROUNDS:
-                overflow = rounds[:-SESSION_RECENT_ROUNDS]
-                rounds = rounds[-SESSION_RECENT_ROUNDS:]
-                # 只摘要"新溢出"的轮并追加到既有摘要后；绝不把旧摘要再喂回摘要器
-                # （否则离线兜底会递归套娃、无限膨胀，REQUIREMENTS 测试 §14-7）。
-                folded = MEMORY.summarize(
-                    {"intent": "session_recap",
-                     "key_facts": [f"用户：{r['user'][:80]} / 回复：{r['reply'][:80]}"
-                                   for r in overflow],
-                     "constraints": [], "open_items": []}
-                )
-                summary = f"{summary} ｜ {folded}".strip(" ｜") if summary else folded
-                summary = summary[-800:]  # 防膨胀：保留最近折叠内容
-                MEMORY_LOG.record(MAINTAIN, "压缩会话记忆",
-                                  f"{len(overflow)} 轮压成摘要，保留最近 {SESSION_RECENT_ROUNDS} 轮")
+            # 重要结果保护：important 轮进 pinned（FIFO cap），永不参与 compaction、永不折叠。
+            if important and (new_round["user"] or new_round["reply"]):
+                pinned.append({"user": new_round["user"][:SESSION_PIN_MAX_CHARS],
+                               "reply": new_round["reply"][:SESSION_PIN_MAX_CHARS]})
+                if len(pinned) > SESSION_MAX_PINNED:
+                    pinned = pinned[-SESSION_MAX_PINNED:]  # FIFO：丢最旧 pin
+                MEMORY_LOG.record(WRITE, "固定重要结果",
+                                  f"pin 第 {len(pinned)} 条，永不压缩")
 
-            repo.upsert(session_id, summary, {"active_mock": active_mock}, rounds)
+            # session context tokens（pinned 不可压 → 不计入触发，避免压不下去；它单独占注入预算）。
+            def _ctx_tokens() -> int:
+                t = count_tokens(summary)
+                for r in rounds:
+                    t += count_tokens(r.get("user", "")) + count_tokens(r.get("reply", ""))
+                return t
+
+            # 触发：本轮结束后 token 超阈 → 折叠最旧轮直到 ≤TARGET（至少留 MIN_RECENT 轮）。
+            if _ctx_tokens() > SESSION_COMPACTION_THRESHOLD_TOKENS:
+                overflow: List[Dict[str, str]] = []
+                while (_ctx_tokens() > SESSION_COMPACTION_TARGET_TOKENS
+                       and len(rounds) > SESSION_MIN_RECENT_ROUNDS):
+                    overflow.append(rounds.pop(0))
+                if overflow:
+                    fold_count += 1
+                    # #2 周期性全量重摘：每 N 次折叠，把"旧 summary + 新溢出"**重新组织**成结构化纯
+                    # 文本（目标/决策/未决项/主题），修正增量折叠的漂移与碎片化。仅 LLM 可用时触发——
+                    # 离线严格保持纯增量（绝不把旧摘要喂回离线摘要器，避免递归套娃/膨胀，§14-7）。
+                    if LLM.available and fold_count % SESSION_RESUMMARIZE_EVERY == 0:
+                        summary = self._resummarize_session(summary, overflow)
+                        MEMORY_LOG.record(MAINTAIN, "全量重摘会话记忆",
+                                          f"第 {fold_count} 次折叠（token 超阈触发结构化重组），保留最近 {len(rounds)} 轮")
+                    else:
+                        # 增量折叠：只摘要"新溢出"的轮并追加到既有摘要后（旧摘要不再喂回摘要器）。
+                        folded = MEMORY.summarize(
+                            {"intent": "session_recap",
+                             "key_facts": [f"用户：{r['user'][:80]} / 回复：{r['reply'][:80]}"
+                                           for r in overflow],
+                             "constraints": [], "open_items": []}
+                        )
+                        # LLM 可用时 summarize 会返回 JSON(含 key_facts/转义引号) → 规整成纯文本，
+                        # 避免原始 JSON 污染会话 summary（§14-7 在 LLM 模式下也保持无嵌套）。
+                        folded = self._summary_to_text(folded)
+                        summary = f"{summary} ｜ {folded}".strip(" ｜") if summary else folded
+                        summary = summary[-800:]  # 防膨胀：保留最近折叠内容
+                        MEMORY_LOG.record(MAINTAIN, "压缩会话记忆",
+                                          f"{len(overflow)} 轮压成摘要（token 超阈），保留最近 {len(rounds)} 轮")
+
+            task["active_mock"] = active_mock
+            task["fold_count"] = fold_count
+            task["pinned"] = pinned
+            repo.upsert(session_id, summary, task, rounds)
             return summary
         except Exception:
             return None
+
+    @staticmethod
+    def turn_is_important(citations: Optional[list] = None,
+                          plan: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """重要结果判定（→ record_turn(important=True) 进 pinned 永不压缩）。
+
+        信号：① 带引用的可核验答案（citations 非空）；② 诊断/规划/模拟面试的结构化产出
+        （plan 命中 diagnosis/planning/mock）。纯闲聊 QA（无引用）不 pin。
+        """
+        if citations:
+            return True
+        agents = {str((s or {}).get("agent") or "").lower() for s in (plan or [])}
+        return bool(agents & {"diagnosis", "planning", "mock"})
+
+    @staticmethod
+    def _summary_to_text(s: str) -> str:
+        """把折叠摘要规整成**纯文本**：LLM 返回 JSON({intent,key_facts,...}) 时抽值拼成中文短句，
+
+        避免原始 JSON（含 key_facts/转义引号/markdown 围栏）污染会话 summary
+        （§14-7 在 LLM 模式下亦无嵌套）。非 JSON → 原样返回。
+        """
+        import re as _re
+
+        t = (s or "").strip()
+        if not t:
+            return t
+        # 先剥 markdown 代码围栏 ```json ... ```（Haiku 常这样包 JSON）。
+        fence = _re.match(r"^```[a-zA-Z]*\s*(.*?)\s*```$", t, _re.DOTALL)
+        if fence:
+            t = fence.group(1).strip()
+        if "key_facts" not in t and not t.lstrip().startswith("{"):
+            return t
+        try:
+            import json as _json
+            d = _json.loads(t)
+            if isinstance(d, dict):
+                bits: List[str] = []
+                if d.get("intent"):
+                    bits.append(str(d["intent"]))
+                for k in ("key_facts", "constraints", "open_items"):
+                    v = d.get(k)
+                    if isinstance(v, list):
+                        bits += [str(x) for x in v if x]
+                    elif v:
+                        bits.append(str(v))
+                return "；".join(bits)[:800] or t
+        except Exception:  # noqa: BLE001 - 不是合法 JSON → 去结构噪声兜底
+            pass
+        t = _re.sub(r'```[a-zA-Z]*|["{}\[\]`]|key_facts|constraints|open_items|intent', "", t)
+        t = _re.sub(r"(?m)^\s*[:：,，]\s*$", "", t)   # 去掉只剩冒号/逗号的空行
+        return _re.sub(r"\n{2,}", "\n", t).strip()[:800]
+
+    def _resummarize_session(self, prior_summary: str, overflow: List[Dict[str, str]]) -> str:
+        """#2：把（旧 summary + 新溢出轮）重摘成**结构化纯文本**（目标/决策/未决项/主题）。
+
+        仅在 LLM 可用时由 record_turn 调用。喂旧 summary 是安全的：LLM 输出经固定 schema **有界**且
+        渲染为纯文本（无 JSON 嵌套），不会像离线兜底那样递归膨胀（§14-7）。失败 → 退回旧 summary。
+        """
+        from ..llm.client import LLM, LLMStructuredError, LLMUnavailable
+        from ..contracts.enums import ModelTier
+        from pydantic import BaseModel, Field
+
+        class _SessionDigest(BaseModel):
+            goal: str = Field(default="", description="会话的原始诉求/总目标")
+            decisions: List[str] = Field(default_factory=list, description="已达成的结论/决策")
+            open_items: List[str] = Field(default_factory=list, description="未决/待办")
+            topics: List[str] = Field(default_factory=list, description="聊过的主题")
+
+        convo = "\n".join(f"用户：{r['user'][:120]} / 回复：{r['reply'][:120]}" for r in overflow)
+        prompt = (
+            f"已有会话概要（参考，可能零散）：\n{prior_summary or '（无）'}\n\n"
+            f"新增对话（更近）：\n{convo}\n\n"
+            "把两者**合并重组**成一份简洁的会话状态（不要逐轮流水账）：goal=贯穿全程的原始诉求；"
+            "decisions=已确定的结论；open_items=仍未决/待办；topics=聊过的主题。各 ≤4 条、每条 ≤30 字。")
+        try:
+            obj, res = LLM.complete_structured(
+                prompt, _SessionDigest, model_tier=ModelTier.HAIKU, max_tokens=400, timeout_s=20,
+                system="你把多轮对话压成结构化会话状态，只输出 schema 字段，简洁、不编造。")
+            self.last_cost_usd = getattr(res, "cost_usd", 0.0)
+        except (LLMUnavailable, LLMStructuredError, Exception):  # noqa: BLE001
+            return prior_summary
+        if obj is None:
+            return prior_summary
+        # 渲染为**纯文本**（绝不 json.dumps，保证无 key_facts/转义引号嵌套，§14-7）。
+        parts = []
+        if obj.goal:
+            parts.append(f"目标：{obj.goal}")
+        if obj.decisions:
+            parts.append("已决策：" + "；".join(obj.decisions[:4]))
+        if obj.open_items:
+            parts.append("未决项：" + "；".join(obj.open_items[:4]))
+        if obj.topics:
+            parts.append("聊过：" + "、".join(obj.topics[:5]))
+        return "\n".join(parts)[:800] or prior_summary
 
     # ---------------- AGGREGATE ----------------
     def aggregate(

@@ -16,14 +16,17 @@ def mem_dir(tmp_path, monkeypatch):
     return tmp_path / "mem"
 
 
-def test_recent_rounds_capped_and_overflow_compressed(tmp_db):
+def test_overflow_compressed_on_token_threshold(tmp_db, monkeypatch):
+    # 会话级 compaction 按 token 阈值触发（不按固定轮数）：阈值调小后灌入大内容触发折叠。
+    monkeypatch.setattr(config, "SESSION_COMPACTION_THRESHOLD_TOKENS", 200)
+    monkeypatch.setattr(config, "SESSION_COMPACTION_TARGET_TOKENS", 100)
+    monkeypatch.setattr(config, "SESSION_MIN_RECENT_ROUNDS", 2)
     mgr = ManagerAgent(db_path=tmp_db)
-    for i in range(7):
-        mgr.record_turn("s1", f"问题{i}", f"回答{i}")
+    for i in range(6):
+        mgr.record_turn("s1", f"问题{i}" + "啊" * 200, f"回答{i}" + "哦" * 200)
     st = SessionStateRepository(db_path=tmp_db).get("s1")
-    assert len(st["recent_messages"]) == config.SESSION_RECENT_ROUNDS  # 仅留最近 6 轮
     assert st["summary"]  # 溢出轮已压成摘要（离线走 JSON 回退）
-    assert "问题0" in st["summary"]  # 最早一轮进了摘要
+    assert config.SESSION_MIN_RECENT_ROUNDS <= len(st["recent_messages"]) < 6
 
 
 def test_load_session_memory_renders_summary_and_recent(tmp_db):

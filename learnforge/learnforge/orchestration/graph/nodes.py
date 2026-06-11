@@ -62,12 +62,14 @@ def manager_aggregate(state: MainState) -> Dict[str, Any]:
     raw = state.get("responses") or []
     responses: List[ResponsePayload] = [ResponsePayload(**r) for r in raw]
     agg = _mgr().aggregate(responses, state.get("plan"), state.get("_meta"))
-    # 短期记忆：本轮收尾追加原文轮 + 溢出压缩（供下一轮 manager_plan 载入）。best-effort。
+    # 短期记忆：本轮收尾追加原文轮 + 会话级 token-阈值 compaction（供下一轮 manager_plan 载入）。
+    # 重要结果（带引用答案 / 诊断·规划·结算产出）标 important → 进 pinned 永不压缩。best-effort。
     _mgr().record_turn(
         state.get("session_id"),
         state.get("user_input", ""),
         agg.get("reply_text") or "",
         state.get("active_mock_session_id"),
+        important=_mgr().turn_is_important(agg.get("citations"), state.get("plan")),
     )
     return {
         "reply_text": agg.get("reply_text"),

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnForge · 会话级上下文压缩（Claude Code 式 compaction）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#9098a1; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:28px;margin:0 0 8px}
+  h1 .tag{font-size:13px;font-weight:600;color:var(--green);border:1px solid var(--green);
+    border-radius:20px;padding:2px 12px;vertical-align:middle;margin-left:10px}
+  .sub{color:var(--muted);font-size:15px;margin:0}
+  h2{font-size:20px;margin:44px 0 16px;padding-left:12px;border-left:3px solid var(--accent)}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:4px;
+    font-size:13px;color:var(--purple)}
+  .muted{color:var(--muted)}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px 22px;margin:16px 0}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  .ba .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .ba .card.old{border-color:#5a3a3a}
+  .ba .card.new{border-color:#2e5a3a}
+  .ba h4{margin:0 0 12px;font-size:14px;letter-spacing:.5px;text-transform:uppercase}
+  .ba .old h4{color:var(--red)} .ba .new h4{color:var(--green)}
+  .ba ul{margin:0;padding-left:18px} .ba li{margin:6px 0;font-size:13.5px}
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:24px;overflow-x:auto}
+  .flow pre{margin:0;font-family:var(--mono);font-size:12.5px;line-height:1.5;color:var(--fg);white-space:pre}
+  .flow .c-acc{color:var(--accent)} .flow .c-grn{color:var(--green)}
+  .flow .c-amb{color:var(--amber)} .flow .c-pur{color:var(--purple)} .flow .c-mut{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:hover td{background:#1b212b}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .pill.rm{color:var(--red);background:rgba(248,81,73,.12)}
+  .pill.add{color:var(--green);background:rgba(63,185,80,.12)}
+  .pill.mod{color:var(--amber);background:rgba(210,153,34,.12)}
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:10px;margin:14px 0;overflow:hidden}
+  .code .bar{background:var(--panel2);padding:6px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .code pre{margin:0;padding:16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:auto;color:#c9d1d9}
+  .k{color:#ff7b72} .s{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .n{color:#79c0ff}
+  .cfg{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin:14px 0}
+  .cfg .item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+  .cfg .item .v{font-family:var(--mono);font-size:20px;color:var(--green);font-weight:700}
+  .cfg .item .name{font-family:var(--mono);font-size:11.5px;color:var(--accent);margin:4px 0 2px;word-break:break-all}
+  .cfg .item .d{font-size:12px;color:var(--muted)}
+  .note{border-left:3px solid var(--amber);background:rgba(210,153,34,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .ok{color:var(--green);font-weight:600}
+  footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0;font-size:12px;color:var(--muted)}
+  .legend span::before{content:"●";margin-right:5px}
+  .l-acc::before{color:var(--accent)} .l-grn::before{color:var(--green)}
+  .l-amb::before{color:var(--amber)} .l-pur::before{color:var(--purple)}
+  .calc{font-family:var(--mono);font-size:13px;background:#0a0e14;border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin:12px 0;color:#c9d1d9;line-height:1.7}
+  .calc b{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>会话级上下文压缩 <span class="tag">Claude Code 式 compaction</span></h1>
+  <p class="sub">把上下文压缩从「单次 prompt 组装时按 volatile budget 裁尾部」重构为
+  「<b>每个 agent turn 结束后、按累计 session token 阈值触发</b>」，并新增<b>重要结果 pin 保护</b>。</p>
+  <p class="sub muted" style="margin-top:6px">分支 <code>feat/mock-answer-quality</code> ·
+  全离线确定性 · <span class="ok">543 passed / 11 skipped，无回归</span></p>
+</header>
+
+<!-- 1 -->
+<h2>1 · 设计转向</h2>
+<div class="ba">
+  <div class="card old">
+    <h4>✗ 旧机制（已撤回）</h4>
+    <ul>
+      <li><b>触发点</b>：每次 <code>llm_structured()</code> 组装 prompt 时</li>
+      <li><b>粒度</b>：单次调用级 —— 裁 <code>retrieved + session</code> volatile 尾部</li>
+      <li>按<b>固定 token 预算</b>硬裁，user_input 永不裁</li>
+      <li>每次调用都重算、重裁，无跨轮记忆</li>
+      <li class="muted">问题：与"会话上下文增长"脱节；重复计算；无重要结果概念</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>✓ 新机制（Claude Code 式）</h4>
+    <ul>
+      <li><b>触发点</b>：每个 <b>agent turn 结束</b>后（<code>record_turn</code>）</li>
+      <li><b>粒度</b>：会话级 —— 统计整个 session context 累计 token</li>
+      <li>占<b>上下文上限 80%</b> 才把最旧轮折叠进 summary</li>
+      <li>压到 <b>~35%</b>，但<b>至少保留 MIN_RECENT 轮</b></li>
+      <li class="ok">重要结果 pin：永不压缩、置顶注入</li>
+    </ul>
+  </div>
+</div>
+<div class="note">
+  <b>阈值不是绝对小数，而是「上下文上限的占用率」</b>（Claude Code 语义）。早期版本曾用绝对值
+  <code>6000</code>（≈窗口 5%），几十轮就触发、过于频繁，已废弃。现按 <code>CONTEXT_LIMIT_TOKENS</code>
+  （默认 = 模型窗口 128K）的百分比派生。<code>memory/tokens.py</code>（tiktoken 优先 + 字符估算降级）
+  负责统计 token；其余 prompt 组装回退为纯拼接。
+</div>
+
+<!-- 2 -->
+<h2>2 · 阈值怎么来的</h2>
+<div class="calc">
+  <span class="cm"># 项目上下文 token 上限（默认 = 所用模型窗口；env <b>LF_CONTEXT_LIMIT_TOKENS</b> 可覆盖）</span><br>
+  CONTEXT_LIMIT_TOKENS = <b>128000</b>   <span class="cm"># openai/gpt-4o-mini 窗口；换 claude-3.5-sonnet 设 200000</span><br><br>
+  SESSION_COMPACTION_THRESHOLD_TOKENS = 128000 × 0.80 = <b>102400</b>   <span class="cm"># 占上限 80% → 触发</span><br>
+  SESSION_COMPACTION_TARGET_TOKENS&nbsp;&nbsp;&nbsp;= 128000 × 0.35 = <b>44800</b>&nbsp;&nbsp;&nbsp;<span class="cm"># 压到 ~35%（30–40% 区间）</span>
+</div>
+<p class="muted" style="font-size:13.5px">单轮 user/reply 各截 500 字符（≈中文 1k / 英文 250 tok），
+故 ~102K 约对应 <b>近百轮对话</b>才触发压缩、压到约 45 轮——<b>日常对话几乎不触发</b>，
+compaction 只在真正逼近上限时兜底，pinned + MIN_RECENT 兜住重要/最近内容。</p>
+
+<!-- 3 -->
+<h2>3 · 数据流与触发时机</h2>
+<div class="legend">
+  <span class="l-acc">主链路节点</span>
+  <span class="l-grn">compaction 决策</span>
+  <span class="l-amb">pinned 重要结果</span>
+  <span class="l-pur">存储</span>
+</div>
+<div class="flow">
+<pre>
+  用户输入
+     │
+     ▼
+ <span class="c-acc">manager_plan</span> ──► begin_memory_turn ──► <span class="c-acc">load_session_memory()</span>
+     │                                         │
+     │          渲染注入 prompt ◄──────────────┤
+     │   <span class="c-amb">[重要结果·固定 pinned]</span> + [早期会话摘要 summary] + [最近原文轮 rounds]
+     ▼
+ <span class="c-acc">manager_execute</span>  (ReAct：qa / diagnose / plan / mock …)
+     │
+     ▼
+ <span class="c-acc">manager_aggregate</span> ──► aggregate() ──► reply
+     │
+     ▼
+ <span class="c-acc">record_turn(</span>session, user, reply, <span class="c-amb">important=turn_is_important(…)</span><span class="c-acc">)</span>   ◄── turn 结束
+     │
+     ├─ rounds.append(本轮)
+     │
+     ├─ <span class="c-amb">important?</span> ──► pinned.append(摘要)  ·  FIFO cap=8  ·  <span class="c-amb">永不折叠</span>
+     │
+     ├─ ctx = count_tokens(summary) + Σ count_tokens(rounds)      <span class="c-mut"># 不含 pinned</span>
+     │
+     └─ <span class="c-grn">if ctx &gt; THRESHOLD(102400 = 上限×80%):</span>
+            <span class="c-grn">while ctx &gt; TARGET(44800 = 上限×35%) and len(rounds) &gt; MIN_RECENT(2):</span>
+                overflow ◄── rounds.pop(0)         <span class="c-mut"># 折叠最旧轮</span>
+            summary ◄── 增量折叠 / 周期性全量重摘(LLM)
+                              │
+                              ▼
+                    <span class="c-pur">SessionStateRepository.upsert</span>
+                    <span class="c-pur">session_state{ summary, recent_messages, active_task{pinned,fold_count} }</span>
+</pre>
+</div>
+
+<!-- 4 -->
+<h2>4 · 文件改动清单</h2>
+<table>
+  <thead><tr><th>文件</th><th>动作</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>memory/tokens.py</code></td><td><span class="pill add">新增</span></td>
+      <td><code>count_tokens()</code>：tiktoken(<code>cl100k_base</code>) 优先，缺包/异常 → 字符估算（CJK≈1 tok/字、拉丁≈1 tok/4 字符）；<code>truncate_to_tokens()</code> 硬截断带标记</td></tr>
+    <tr><td><code>memory/context_assembler.py</code></td><td><span class="pill rm">回退</span></td>
+      <td>撤掉 budget/compressor 裁剪，恢复纯拼接；体量控制改在会话级 compaction</td></tr>
+    <tr><td><code>agents/base.py</code></td><td><span class="pill rm">回退</span></td>
+      <td>移除 <code>budget=</code> / <code>compressor=</code> 传参与 <code>_context_compressor()</code></td></tr>
+    <tr><td><code>config.py</code></td><td><span class="pill mod">改</span></td>
+      <td>阈值改按 <code>CONTEXT_LIMIT_TOKENS</code>（默认 128K，env 可覆盖）× 80% / 35% 派生；删旧的绝对值 6000/3000 与 <code>SESSION_RECENT_ROUNDS</code></td></tr>
+    <tr><td><code>orchestration/manager.py</code></td><td><span class="pill mod">核心</span></td>
+      <td><code>record_turn</code> 改 token 阈值触发 + <code>important</code> 入参；新增 <code>turn_is_important()</code>；<code>load_session_memory</code> 置顶注入 pinned</td></tr>
+    <tr><td><code>graph/nodes.py</code> · <code>cli.py</code> · <code>app/server.py</code></td><td><span class="pill mod">改</span></td>
+      <td>4 处 <code>record_turn</code> 调用点传 <code>important=</code>（citations / 诊断·规划·结算 → True）</td></tr>
+    <tr><td><code>eval/memory_eval.py</code></td><td><span class="pill mod">改</span></td>
+      <td>§14-3 标准改为「token 触发 / 保留下限 / pin 保护」；冒烟用临时小阈值验证机制（与默认大阈值解耦）</td></tr>
+    <tr><td><code>tests/test_context_compaction.py</code></td><td><span class="pill add">重写</span></td>
+      <td>10 例：tokens 基元 + 会话级触发 + MIN_RECENT 下限 + pin 保护(FIFO) + <code>turn_is_important</code> 判定</td></tr>
+    <tr><td><code>tests/test_session_memory.py</code></td><td><span class="pill mod">改</span></td>
+      <td>按轮数 cap 的断言 → 按 token 阈值触发</td></tr>
+  </tbody>
+</table>
+
+<!-- 5 -->
+<h2>5 · 配置参数</h2>
+<div class="cfg">
+  <div class="item"><div class="v">128000</div>
+    <div class="name">CONTEXT_LIMIT_TOKENS</div>
+    <div class="d">项目上下文 token 上限（100% 基准）。默认=模型窗口 gpt-4o-mini 128K；env <code>LF_CONTEXT_LIMIT_TOKENS</code> 覆盖</div></div>
+  <div class="item"><div class="v">0.80</div>
+    <div class="name">SESSION_COMPACTION_TRIGGER_RATIO</div>
+    <div class="d">占上限 80% → 触发 compaction（派生出 THRESHOLD=102400）</div></div>
+  <div class="item"><div class="v">0.35</div>
+    <div class="name">SESSION_COMPACTION_TARGET_RATIO</div>
+    <div class="d">压到上限 ~35%（派生出 TARGET=44800，落 30–40% 区间）</div></div>
+  <div class="item"><div class="v">2</div>
+    <div class="name">SESSION_MIN_RECENT_ROUNDS</div>
+    <div class="d">compact 至少保留最近 N 轮原文，防把当前对话压没</div></div>
+  <div class="item"><div class="v">8</div>
+    <div class="name">SESSION_MAX_PINNED</div>
+    <div class="d">pinned 重要结果上限（FIFO 丢最旧）</div></div>
+  <div class="item"><div class="v">500</div>
+    <div class="name">SESSION_PIN_MAX_CHARS</div>
+    <div class="d">单条 pin 长度上限，防膨胀</div></div>
+</div>
+<div class="note">
+  换模型只需设 <code>LF_CONTEXT_LIMIT_TOKENS</code>：claude-3.5-sonnet → <code>200000</code>（阈值自动变 160000）；
+  想更省成本 / 更早压缩就调小。阈值随上限按比例自适应，无需手改绝对值。
+</div>
+
+<!-- 6 -->
+<h2>6 · 触发逻辑（<code>record_turn</code> 核心）</h2>
+<div class="code">
+  <div class="bar">orchestration/manager.py · record_turn()</div>
+<pre><span class="cm"># session context tokens（pinned 不可压 → 不计入触发，避免压不下去；它单独占注入预算）</span>
+<span class="k">def</span> <span class="fn">_ctx_tokens</span>() -&gt; <span class="n">int</span>:
+    t = <span class="fn">count_tokens</span>(summary)
+    <span class="k">for</span> r <span class="k">in</span> rounds:
+        t += <span class="fn">count_tokens</span>(r.get(<span class="s">"user"</span>, <span class="s">""</span>)) + <span class="fn">count_tokens</span>(r.get(<span class="s">"reply"</span>, <span class="s">""</span>))
+    <span class="k">return</span> t
+
+<span class="cm"># 触发：本轮结束后 token 超阈（上限×80%）→ 折叠最旧轮直到 ≤TARGET（上限×35%，至少留 MIN_RECENT 轮）</span>
+<span class="k">if</span> <span class="fn">_ctx_tokens</span>() &gt; <span class="n">SESSION_COMPACTION_THRESHOLD_TOKENS</span>:
+    overflow = []
+    <span class="k">while</span> (<span class="fn">_ctx_tokens</span>() &gt; <span class="n">SESSION_COMPACTION_TARGET_TOKENS</span>
+           <span class="k">and</span> <span class="fn">len</span>(rounds) &gt; <span class="n">SESSION_MIN_RECENT_ROUNDS</span>):
+        overflow.append(rounds.pop(<span class="n">0</span>))      <span class="cm"># FIFO：折叠最旧轮</span>
+    <span class="k">if</span> overflow:
+        fold_count += <span class="n">1</span>
+        <span class="k">if</span> LLM.available <span class="k">and</span> fold_count % <span class="n">SESSION_RESUMMARIZE_EVERY</span> == <span class="n">0</span>:
+            summary = self.<span class="fn">_resummarize_session</span>(summary, overflow)  <span class="cm"># 周期性结构化全量重摘</span>
+        <span class="k">else</span>:
+            summary = <span class="fn">增量折叠</span>(summary, overflow)[-<span class="n">800</span>:]          <span class="cm"># 离线纯增量、防膨胀</span></pre>
+</div>
+
+<!-- 7 -->
+<h2>7 · 重要结果保护机制（pinned）</h2>
+<div class="panel">
+  <h3>① 谁算"重要"<span class="muted"> — turn_is_important()</span></h3>
+  <table style="margin-top:4px">
+    <tbody>
+      <tr><td style="width:46%"><b>带引用的可核验答案</b><br><span class="muted">citations 非空</span></td><td class="ok">→ pin</td></tr>
+      <tr><td><b>诊断 / 规划 / 模拟面试</b>的结构化产出<br><span class="muted">plan 命中 diagnosis / planning / mock</span></td><td class="ok">→ pin</td></tr>
+      <tr><td><b>简历诊断端点</b><br><span class="muted">server 显式 important=True</span></td><td class="ok">→ pin</td></tr>
+      <tr><td>纯闲聊 QA（无引用）</td><td class="muted">→ 不 pin，随 compaction 折叠</td></tr>
+    </tbody>
+  </table>
+  <h3>② 怎么存与保护</h3>
+  <ul style="margin:0;padding-left:18px;font-size:13.5px">
+    <li>存进 <code>active_task["pinned"]</code> —— 复用既有 JSON 列，<b>零 DDL 迁移、向后兼容</b></li>
+    <li><b>永不参与 compaction</b>、永不折叠进 summary</li>
+    <li><code>load_session_memory</code> 渲染时 <b>置顶全文注入</b>：<code>[重要结果·固定] …</code></li>
+    <li>防膨胀：<code>MAX_PINNED=8</code>（FIFO 丢最旧）+ <code>PIN_MAX_CHARS=500</code>（单条截断）</li>
+    <li><b>不计入触发阈值</b> —— pinned 不可压，计入会导致"压不下去"的死循环</li>
+  </ul>
+</div>
+
+<!-- 8 -->
+<h2>8 · 测试与验证</h2>
+<div class="panel">
+  <p style="margin-top:0"><code>tests/test_context_compaction.py</code>（10 例，全离线）覆盖：</p>
+  <ul style="font-size:13.5px">
+    <li><b>tokens 基元</b>：空串=0、单调性、<code>truncate_to_tokens</code> 不超预算且带标记</li>
+    <li><b>会话级触发</b>：阈值调小后灌大内容 → summary 非空、recent &lt; 灌入数</li>
+    <li><b>阈值下不压</b>：默认 ≈10 万（上限×80%）下两轮短内容 → 无摘要、原文全留</li>
+    <li><b>MIN_RECENT 下限</b>：灌 10 轮仍 ≥ 2 轮原文</li>
+    <li><b>pin 保护</b>：大量闲聊后重要结果仍在 pinned、渲染含 <code>重要结果·固定</code></li>
+    <li><b>pin FIFO</b>：超 cap 丢最旧、留最新</li>
+    <li><b>turn_is_important</b>：citations / diagnosis / planning / mock → True；qa → False</li>
+  </ul>
+  <p style="margin-bottom:0" class="ok">✓ 全量 543 passed / 11 skipped · 改动文件零新增 lint 错误</p>
+</div>
+
+<footer>
+  LearnForge · 会话级上下文压缩重构说明 · 阈值按 CONTEXT_LIMIT_TOKENS(128K)×80%/35% 派生 ·
+  与 <code>docs/module-updates/memory.md</code> 同属 memory 模块更新记录。
+</footer>
+
+</div>
+</body>
+</html>

@@ -231,7 +231,7 @@ def _ui_fast_qa(text: str, session_id: str) -> dict:
         "trace_id": f"t-{session_id}",
     }
     # Keep short-session continuity, but skip daily QA indexing for fast concept cards.
-    mgr.record_turn(session_id, text, out.answer)
+    mgr.record_turn(session_id, text, out.answer, important=bool(out.citations))
     return body
 
 
@@ -272,7 +272,7 @@ def _qa_with_attachments(text: str, atts, session_id: str) -> dict:
         "documents": [d.model_dump() for d in manifest.documents],
         "manifest": manifest.manifest_line(),
     }
-    mgr.record_turn(session_id, q, out.answer)
+    mgr.record_turn(session_id, q, out.answer, important=bool(out.citations))
     return body
 
 
@@ -310,7 +310,8 @@ def _resume_diagnosis_response(text: str, resume_text: str, session_id: str,
     mgr = _mgr()
     diag = mgr.diagnosis.diagnose_resume(cleaned, InterviewContext(), persist=True)
     reply = _render_resume_diagnosis(diag)
-    mgr.record_turn(session_id, text or "诊断我的简历", reply)
+    # 简历诊断 = 重要结构化产出（无 citations 但需固定，后续对话强依赖）→ pin 不压缩。
+    mgr.record_turn(session_id, text or "诊断我的简历", reply, important=True)
     return {
         "reply_text": reply,
         "citations": [],

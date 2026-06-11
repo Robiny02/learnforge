@@ -274,19 +274,37 @@ def smoke_checks(db_path: str) -> dict:
     res["reindex_count"] = n
     res["reindex_recall_stable"] = before > 0 and after > 0
 
-    # §6.5 session 压缩：第 7 轮触发、保留 6 轮、summary 无 JSON 套娃
+    # §6.5 session 压缩（Claude Code 式：turn 结束按 token 阈值触发，不按轮数）。冒烟用一个**临时
+    # 小阈值**验证机制（触发 + pin 保护 + 保留下限），与默认阈值（≈上限 80% ≈ 10 万 tok）解耦——
+    # 默认下日常对话几乎不触发，不适合做冒烟。
+    from .. import config
+
     mgr = ManagerAgent(db_path=db_path)
     sid = "evalsess"
-    triggered_at = None
-    for i in range(1, 9):
-        mgr.record_turn(sid, f"问题{i}", f"回答{i}")
-        st = SessionStateRepository(db_path=db_path).get(sid)
-        if st.get("summary") and triggered_at is None:
-            triggered_at = i
-        last_rounds = len(st.get("recent_messages") or [])
-    final_sum = (SessionStateRepository(db_path=db_path).get(sid) or {}).get("summary") or ""
-    res["session_compress_trigger_turn"] = triggered_at
-    res["session_keeps_recent_n"] = last_rounds == 6
+    _saved = (config.SESSION_COMPACTION_THRESHOLD_TOKENS,
+              config.SESSION_COMPACTION_TARGET_TOKENS,
+              config.SESSION_MIN_RECENT_ROUNDS)
+    config.SESSION_COMPACTION_THRESHOLD_TOKENS = 200
+    config.SESSION_COMPACTION_TARGET_TOKENS = 100
+    config.SESSION_MIN_RECENT_ROUNDS = 2
+    try:
+        mgr.record_turn(sid, "诊断我的弱点", "你的薄弱点是并发与锁机制", important=True)
+        triggered = False
+        for i in range(1, 9):
+            mgr.record_turn(sid, f"问题{i}" + "啊" * 200, f"回答{i}" + "哦" * 200)
+            if (SessionStateRepository(db_path=db_path).get(sid) or {}).get("summary"):
+                triggered = True
+        st = SessionStateRepository(db_path=db_path).get(sid) or {}
+    finally:
+        (config.SESSION_COMPACTION_THRESHOLD_TOKENS,
+         config.SESSION_COMPACTION_TARGET_TOKENS,
+         config.SESSION_MIN_RECENT_ROUNDS) = _saved
+    final_sum = st.get("summary") or ""
+    last_rounds = len(st.get("recent_messages") or [])
+    pinned = (st.get("active_task") or {}).get("pinned") or []
+    res["session_compress_triggered"] = triggered
+    res["session_keeps_recent_n"] = 2 <= last_rounds < 9
+    res["session_pin_protected"] = any("并发" in p.get("reply", "") for p in pinned)
     res["session_no_json_nesting"] = ('\\"' not in final_sum) and ("key_facts" not in final_sum)
     res["session_summary_len"] = len(final_sum)
 
@@ -309,7 +327,8 @@ def phase1_criteria(report: dict) -> List[tuple]:
     return [
         ("§14-1 MEMORY.md 初始化并加载", sm["memory_md_loads"]),
         ("§14-2 daily 写入 + FTS 索引", sm["reindex_recall_stable"]),
-        ("§14-3 session 压缩(第7轮触发/保留6)", sm["session_compress_trigger_turn"] == 7 and sm["session_keeps_recent_n"]),
+        ("§14-3 session 压缩(token 触发/保留下限/pin 保护)",
+         sm["session_compress_triggered"] and sm["session_keeps_recent_n"] and sm["session_pin_protected"]),
         ("§14-4 FTS fallback 基础召回", m["hit@5"] >= 0.90),
         ("§14-5 kind/topic 过滤", m["kind_accuracy"] >= 0.85 and m["topic_accuracy"] >= 0.85),
         ("§14-6 重要性 + 时间衰减影响排序", rk["importance_ok"] and m["rank1_accuracy"] >= 0.99),
@@ -360,7 +379,8 @@ def main(argv=None) -> int:
     sm = rep["smoke"]
     P("\n[功能冒烟]")
     for k in ("memory_md_loads", "memory_md_not_indexed", "reindex_count", "reindex_recall_stable",
-              "session_compress_trigger_turn", "session_keeps_recent_n", "session_no_json_nesting",
+              "session_compress_triggered", "session_keeps_recent_n", "session_pin_protected",
+              "session_no_json_nesting",
               "session_summary_len", "log_has_load_stable", "log_has_search", "log_has_inject"):
         P(f"  {k:<32} = {sm[k]}")
 
