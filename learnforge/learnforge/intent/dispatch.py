@@ -167,7 +167,12 @@ class Dispatcher:
         win = ""
         if ctx.get("summary"):
             win += f"会话概要：{ctx['summary']}\n"
-        anchors = [f"  「{a.get('text', '')}」(判为 {a.get('capability', '?')})"
+        # 锚点带 kind 标签：origin=会话原始诉求(留头)、attachment=已上传附件(可跨轮引用)、
+        # thread_start/artifact/clarify=主线转折/产物/待澄清——让路由器看清"早于近窗"的关键节点。
+        _KIND_TAG = {"origin": "原始诉求", "attachment": "已上传附件",
+                     "thread_start": "主线起点", "artifact": "已有产物", "clarify": "待澄清"}
+        anchors = [f"  [{_KIND_TAG.get(a.get('kind', ''), a.get('kind', '节点'))}]"
+                   f"「{a.get('text', '')}」(判为 {a.get('capability', '?')})"
                    for a in (ctx.get("anchors") or []) if a.get("text")]
         if anchors:
             win += "关键节点(可能早于近窗)：\n" + "\n".join(anchors) + "\n"

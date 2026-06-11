@@ -34,12 +34,18 @@ class Attachment(BaseModel):
         return self.kind == "image" and bool(self.image_data_url)
 
     def as_evidence(self) -> str:
-        """文本附件渲染成带来源的证据块(进 retrieved 槽)。"""
+        """文本附件渲染成带来源的证据块(进 retrieved 槽)。
+
+        借鉴 Claude Code：超预算被截断时**带指针**——告知完整内容已入库、可按文件名/document_id
+        检索取回，避免模型以为眼前就是全文（而非默默吞掉剩余部分）。
+        """
         if not self.extracted_text:
             return ""
         head = f"【附件：{self.filename or self.kind}】"
         if self.truncated:
-            head += "(已截断)"
+            ref = self.meta.get("document_id")
+            head += (f"（已截断；完整内容已入库，可按文件名「{self.filename or self.kind}」"
+                     + (f"或 document_id={ref} " if ref else "") + "检索取回）")
         return f"{head}\n{self.extracted_text}"
 
 

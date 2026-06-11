@@ -8,5 +8,6 @@
 | 模块 | 文件 | 说明 |
 |---|---|---|
 | Diagnose / Resume Diagnosis | [diagnosis.md](diagnosis.md) | 简历/项目级诊断：从「文本审稿」→「Repo-RAG 项目拷打器」的演进 |
+| Memory / Context | [memory.md](memory.md) | 记忆/上下文治理：对照 Claude Code 的「留首尾·压中间」审计 + 留头锚点/周期重摘/replan 可见性/附件借鉴 |
 
 > 新增模块更新时：在此表加一行，并新建对应 `<module>.md`。每个条目尽量带提交哈希，便于 `git show`。

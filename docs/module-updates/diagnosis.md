@@ -82,6 +82,46 @@
   `SubClaim.related_not_supporting` 展示「读到但只相关、不足以支持」（如 handoff.py 只证 mock handoff）；
   当前项目段每条核心 bullet 都要有 packet。
 
+## Phase 4 — 行为可观测 + ID 完整性（2026-06-10）
+
+- **新增 diagnose 专用行为日志** `agents/diagnosis/diag_log.py`（用户需求：「单独用一个日志记录 diagnose
+  每次的行为」）。与 `memory/log.py`（按轮记忆面板）不同，这是**每次诊断调用落一行 JSONL**
+  （`LF_DIAGNOSE_LOG` 覆盖，默认 `learnforge/logs/diagnose.jsonl`，跨进程不丢）：记 kind（weakness/resume）、
+  是否触发 ReAct + 轮数、是否降级、读了哪些仓库/文件、子断言支持度分布、是否落库可召回（chunk_id）、耗时。
+  `run()` 与 `diagnose_resume()` 各埋一点，best-effort、绝不反噬只读主流程。`DIAG_LOG.read_jsonl()` 供事后审计/评估。
+- **修 `diagnosis_id` 完整性 bug**：LLM 结构化输出会把 `diagnosis_id` 填成占位值（实测 `123456789`/
+  `diagnosis-001`），覆盖契约的 uuid4 默认值 → 持久化 chunk_id=`resume-diag-<id>` **撞车互相覆盖**
+  （两次不同诊断只剩一条）。修复：采纳 LLM 输出后**强制服务端重置 `diagnosis_id=uuid4()`**，不信任模型生成的标识符。
+- **实测**（`github.com/Robiny02/learnforge` + 仓库内简历）：deep 模式触发 Repo-RAG + reranker（README→
+  architecture.md→diagnosis_agent.py→tests→mock_graph.py）+ 受控 ReAct 追读 2 文件；4 个 packet 对应 LearnForge
+  4 条核心 bullet，子断言级支持度（doc/code/test 混合、取最弱项），`handoff.py` 正确落 `related_not_supporting`，
+  第二个 Java 项目的高并发/缓存亮点**未串入** LearnForge；落库后 `latest_resume_diagnosis` 可召回。
+  已知小限制：`search_text()` 不含项目名字面量，按「LearnForge」关键词召回会落空（按角色/Manager 等术语可召回）。
+
+## Phase 5 — 分层模型 + 分项目合成（2026-06-10）
+
+- **问题**：简历诊断原是**单次大调用**（整份简历含多个项目 + 全部证据塞进一个 gpt-4o），模型能力有限时
+  两个项目的亮点**互串**、且建议**泛化肤浅**。
+- **改法（分层 + 分项目）**：`split_resume_projects`（`repo_map.py`）按"项目顶部锚点"（github 链接 / 日期区间，
+  对 PDF 硬换行鲁棒）把项目经历段切成逐个项目块 → **每块各自取证 + 单独深合成**（上下文里只有一个项目，
+  **结构上杜绝串项目**）→ `_merge_project_diagnoses` 合并：packets/改写按项目归属直接拼，top_highlights/
+  most_dangerous 每项目各取前 2，`jd_fit` 取最强档。
+- **三档模型**（`_resume_synth_model` / `_resume_merge_model` + evidence 的 `_RANK_MODEL`）：
+  ① metadata 级 rerank/judge/选文件 → **gpt-4o-mini**（快，只看元数据/片段）；
+  ② 逐项目**深合成** → **gpt-4o**（要求快而稳，结构化大输出不能截断/超时；`LF_RESUME_MODEL` 可覆盖）；
+  ③ 跨项目**总体研判** → **更强模型 claude-sonnet-4.6**（输入小=只各项目结论、输出 ≤5 句，安全地上强模型；
+  `LF_RESUME_MERGE_MODEL` / `LF_SONNET_MODEL` 解析）。
+- **实测教训（写进代码注释）**：曾把**逐项目大合成**也换成 sonnet-4.6 → ①带思考 + 8000 token 上限**JSON 截断**
+  使 LearnForge 块产出为空、整块掉队（变成全 Java），②单块数分钟、两块串行 **~9min** 破前端超时。故强模型
+  只留给小而安全的研判档。修正后：synth=gpt-4o、merge=sonnet → **98s**、两项目各自产 packet（`synth_ok=2`）、
+  互不串；merge 给出**有深度且分优先级的具体建议**（"项目2 应主推；项目1 Agent 方向证据最薄弱风险最高；
+  补 Redis Lua 限流脚本片段+实测 QPS / 说清动态编排调度决策逻辑给真实链路日志"），而非旧版泛化总结。
+- diag 行为日志（Phase 4）扩展：记 `per_project` / `projects` / `synth_ok` / `synth_model` / `merge_model`。
+- **逐项目合成并行化**（`_synthesize_blocks_parallel`）：证据挖掘（含 github / os.environ PAT 改动）保持**串行**，
+  只把**无状态的逐项目 LLM 合成**放进线程池并发。线程安全做法：`self.skill` 在并行段**外面设一次**，线程内
+  只读不 swap（消除并发改 self.skill 的 race）；`memory_prefix` 命中 MEMORY.md 走文件读不碰 SQLite，
+  fallback 异常也被每块的 try 兜成 None→退规则。实测 **98s→43.7s（~2.2×）**，`synth_ok=2`、隔离与深度不变。
+
 ---
 
 ## 现状速览（一句话）

@@ -97,6 +97,8 @@ class DiagnosisAgent(BaseAgent):
 
     # ------------------------------------------------------------------ run
     def run(self, payload: DiagnosisInput) -> DiagnosisResult:
+        import time as _time
+        t0 = _time.time()
         selected = SKILL_REGISTRY.select(
             self.agent_id,
             intent="diagnose",
@@ -106,11 +108,49 @@ class DiagnosisAgent(BaseAgent):
         if selected:
             self.skill = selected[0]
         # LLM 自主 ReAct（模型自己决定调哪些诊断工具）；降级/不可用 → 确定性兜底。
+        out: Optional[DiagnosisResult] = None
+        path = "deterministic"
         if LLM.available and self.skill is not None:
             out = self._run_react(payload)
             if out is not None:
-                return out
-        return self._run_deterministic(payload)
+                path = "react"
+        if out is None:
+            out = self._run_deterministic(payload)
+        self._log_weakness(payload, out, path, int((_time.time() - t0) * 1000))
+        return out
+
+    def _log_weakness(self, payload: DiagnosisInput, out: DiagnosisResult,
+                      path: str, latency_ms: int) -> None:
+        """把一次弱点诊断的行为落到独立 diagnose 日志（best-effort，绝不反噬只读主流程）。"""
+        try:
+            from .diag_log import DIAG_LOG, DiagnoseRecord
+            topics = "、".join(c.topic for c in out.clusters[:3]) or "无明显弱点"
+            react = path == "react"
+            DIAG_LOG.record(DiagnoseRecord(
+                kind="weakness",
+                summary=(f"弱点诊断(trigger={payload.trigger.value}, win={payload.time_window.value}) → "
+                         f"{len(out.weak_atoms)} weak_atoms / {len(out.clusters)} clusters[{topics}], "
+                         f"conf={out.confidence}"),
+                react_triggered=react,
+                react_rounds=len(self.last_react_trace or []),
+                degraded=not react,           # 未走 LLM ReAct = 走了确定性兜底
+                persisted_ref=None,            # 弱点诊断严格只读，不落库
+                latency_ms=latency_ms,
+                extra={
+                    "trigger": payload.trigger.value,
+                    "time_window": payload.time_window.value,
+                    "focus_topics": list(payload.focus_topics),
+                    "path": path,
+                    "weak_atoms": len(out.weak_atoms),
+                    "clusters": [{"topic": c.topic, "severity": round(c.severity, 3)}
+                                 for c in out.clusters],
+                    "confidence": out.confidence,
+                    "recommendations": list(out.recommendations),
+                    "react_trace": list(self.last_react_trace or []),
+                },
+            ))
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------- LLM 自主 ReAct（驱动 tools/ 诊断工具）
     def _run_react(self, payload: DiagnosisInput) -> Optional[DiagnosisResult]:
@@ -221,7 +261,10 @@ class DiagnosisAgent(BaseAgent):
         """
         from .resume import analyze_resume_rules, detect_resume_language, extract_job_intent
         from .evidence import should_deep_mine
+        import time as _time
 
+        t0 = _time.time()
+        llm_used = False
         ctx = context or InterviewContext()
         # JD 默认：未提供目标岗位时，按简历『求职意向』评估（避免 jd_fit=unknown）。
         if not ctx.target_role:
@@ -230,62 +273,278 @@ class DiagnosisAgent(BaseAgent):
         base = analyze_resume_rules(resume_text or "", ctx)  # 确定性基线（链路永远通）
         result = base
 
-        # 项目证据挖掘：有外链 / deep=True → 受控深挖（按 claim 找源码/测试 + 抓博客/文档）；否则 fast。
+        # 项目证据挖掘触发：有外链 / deep=True → 受控深挖（按 claim 找源码/测试 + 抓博客/文档）；否则 fast。
         use_deep = should_deep_mine(resume_text or "", deep)
-        evidence = self._mine_evidence(resume_text or "", deep=use_deep)
 
-        if LLM.available and (resume_text or "").strip():
-            sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
-            if sk is not None:
-                prev = self.skill
-                self.skill = sk
-                try:
-                    import os as _os
-                    out = self.llm_structured(
-                        self._resume_prompt(resume_text, ctx, base, evidence, lang),
-                        ResumeDiagnosis,
-                        max_tokens=8000,  # 项目级输出较大，4096 会截断（模型把整篇塞进一个字段时尤甚）
-                        timeout_s=90.0,  # 深度推理较慢，默认 45s 会半途超时→重试→更慢
-                        # 用快模型做结构化简历分析：慢推理模型(如 claude-sonnet-4.6 带思考)单次要~2min，
-                        # 破前端超时；gpt-4o 又快又强，深度足够。可经 LF_RESUME_MODEL 覆盖。
-                        model=_os.environ.get("LF_RESUME_MODEL", "openai/gpt-4o"),
-                    )
-                finally:
-                    self.skill = prev
-                # 新输出以 packets 为主，issues 可空 → 二者有其一即采纳。
+        # —— 分层 + 分项目（核心改进）——
+        # 旧法把整份简历（含多个项目）+ 全部证据塞进**一次大调用**，模型能力有限时易把两个项目的亮点
+        # 互串、且建议泛化。改为：按项目切块 → 每块**各自取证** + 用**更强模型单独深合成**（上下文里只有
+        # 一个项目，结构上杜绝串项目，单块更小也能上更强模型而不超时）→ 再合并各项目结论。
+        from .repo_map import split_resume_projects
+
+        blocks = split_resume_projects(resume_text or "")
+        synth_model = _resume_synth_model()
+        per_project = bool(LLM.available and (resume_text or "").strip() and len(blocks) >= 2)
+        meta = {"per_project": per_project, "projects": len(blocks) if per_project else 1,
+                "synth_model": synth_model,
+                "merge_model": _resume_merge_model() if per_project else None}
+
+        # skill 在并行段**外面设一次**：逐块合成走 self.llm_structured，它只**读** self.skill；线程内不再 swap，
+        # 消除并发改 self.skill 的 race。证据挖掘（含 github / os.environ PAT 改动）保持**串行**，不并行。
+        sk = SKILL_REGISTRY.get("diagnosis.resume.v1")
+        prev_skill = self.skill
+        if sk is not None:
+            self.skill = sk
+        try:
+            if per_project:
+                evidence = {"corpus": "", "sources": [], "repos": [], "external_sources": []}
+                mined = []  # 串行挖证据（每块各自取证），再并行合成
+                for blk in blocks:
+                    ev = self._mine_evidence(blk, deep=use_deep)
+                    self._accumulate_evidence(evidence, ev)
+                    mined.append((blk, ev, analyze_resume_rules(blk, ctx)))
+                raw = self._synthesize_blocks_parallel(mined, ctx, lang, synth_model)
+                parts = [r if r is not None else mined[i][2] for i, r in enumerate(raw)]
+                synth_ok = sum(1 for r in raw if r is not None)
+                result = self._merge_project_diagnoses(parts, base, ctx, lang)
+                llm_used = synth_ok > 0
+                meta["synth_ok"] = synth_ok  # 几块成功用 LLM 合成（<projects 说明有项目掉回规则兜底）
+            else:
+                evidence = self._mine_evidence(resume_text or "", deep=use_deep)
+                out = self._synthesize_resume(resume_text or "", ctx, base, evidence, lang, synth_model)
                 if out is not None and (out.packets or out.issues):
-                    out.target_role = out.target_role or ctx.target_role
-                    out.role_type = out.role_type or base.role_type
-                    out.resume_digest = out.resume_digest or base.resume_digest
-                    if not out.strengths:
-                        out.strengths = base.strengths
-                    if not out.evidence_sources_used:
-                        out.evidence_sources_used = list(evidence.get("sources") or [])
-                    out.external_sources = list(evidence.get("external_sources") or [])
-                    self._enforce_subclaim_support(out)  # packet 支持度取子断言最弱项 + support_summary
-                    self._reconcile_no_match(out)       # 被 subclaim 引用的文件不再标 no_match（req3）
-                    self._ensure_rewrite_coverage(out)  # 每条核心 claim 至少一条改写
                     result = out
-                else:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "Resume LLM diagnosis produced no usable output (resume_len=%d); "
-                        "falling back to the shallow rule engine. Likely JSON truncation or "
-                        "model/slug error — check LF_RESUME_MODEL.",
-                        len((resume_text or "")),
-                    )
+                    llm_used = True
+        finally:
+            self.skill = prev_skill
 
+        # 顶层身份字段兜底 + 强制重置 id（不信任模型生成的标识符，避免 chunk_id 撞车互相覆盖）。
+        import uuid as _uuid
+        result.diagnosis_id = str(_uuid.uuid4())
+        result.target_role = result.target_role or ctx.target_role
+        result.role_type = result.role_type or base.role_type
+        result.resume_digest = result.resume_digest or base.resume_digest
+        if not result.strengths:
+            result.strengths = base.strengths
         if not result.external_sources:
             result.external_sources = list(evidence.get("external_sources") or [])
 
+        persisted_ref: Optional[str] = None
         if persist:
             try:
                 from ...memory.resume import save_resume_diagnosis
 
-                save_resume_diagnosis(result, db_path=self._db_path)
+                persisted_ref = save_resume_diagnosis(result, db_path=self._db_path)
             except Exception:  # noqa: BLE001 - 保存失败不阻断诊断返回（best-effort）
                 pass
+
+        self._log_resume(result, evidence, use_deep, llm_used, lang,
+                         persisted_ref, int((_time.time() - t0) * 1000), meta)
         return result
+
+    # ----------------------------------------- 分层合成：单块深合成 + 跨项目合并
+    def _synthesize_blocks_parallel(self, mined: List[Tuple], ctx: InterviewContext,
+                                    lang: str, model: str) -> List[Optional[ResumeDiagnosis]]:
+        """**并行**逐项目合成（线程安全：各块只读已设好的 self.skill，纯 HTTP LLM 调用，无共享可变写）。
+
+        `mined`: [(block_text, evidence, block_base)]。单块直接串行；多块用线程池并发（save ~一块合成耗时）。
+        证据挖掘已在调用前串行完成，这里只跑无状态的结构化合成。单块异常 → None（调用方退该块规则兜底）。
+        """
+        if len(mined) <= 1:
+            return [self._synthesize_resume(b, ctx, bb, ev, lang, model) for b, ev, bb in mined]
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(item):
+            blk, ev, base_blk = item
+            try:
+                return self._synthesize_resume(blk, ctx, base_blk, ev, lang, model)
+            except Exception:  # noqa: BLE001 - 单块失败不拖垮其它块
+                return None
+
+        with ThreadPoolExecutor(max_workers=min(len(mined), 4)) as ex:
+            return list(ex.map(_one, mined))
+
+    def _synthesize_resume(self, text: str, ctx: InterviewContext, base: ResumeDiagnosis,
+                           evidence: dict, lang: str, model: str) -> Optional[ResumeDiagnosis]:
+        """对**一段简历/单个项目**做结构化深合成。无 key/失败 → None（调用方退确定性）。
+
+        前提：调用方已把 `self.skill` 设为 `diagnosis.resume.v1`。并行调用时本方法**只读** self.skill、
+        不 swap（swap 会与其它线程互相踩，故下放到调用方一次性设置）。
+        """
+        if not (LLM.available and (text or "").strip() and self.skill is not None):
+            return None
+        out = self.llm_structured(
+            self._resume_prompt(text, ctx, base, evidence, lang),
+            ResumeDiagnosis,
+            max_tokens=8000,   # 项目级输出较大，4096 会截断
+            timeout_s=90.0,    # 更强模型推理较慢，单块比整份小故仍可控
+            model=model,
+        )
+        if out is None or not (out.packets or out.issues):
+            import logging
+            logging.getLogger(__name__).warning(
+                "Resume LLM synthesis produced no usable output (len=%d, model=%s); "
+                "falling back to rule engine for this block.", len(text or ""), model)
+            return None
+        out.target_role = out.target_role or ctx.target_role
+        out.role_type = out.role_type or base.role_type
+        out.resume_digest = out.resume_digest or base.resume_digest
+        if not out.strengths:
+            out.strengths = base.strengths
+        if not out.evidence_sources_used:
+            out.evidence_sources_used = list(evidence.get("sources") or [])
+        out.external_sources = list(evidence.get("external_sources") or [])
+        self._enforce_subclaim_support(out)  # packet 支持度取子断言最弱项 + support_summary
+        self._reconcile_no_match(out)        # 被 subclaim 引用的文件不再标 no_match
+        self._ensure_rewrite_coverage(out)   # 每条核心 claim 至少一条改写
+        return out
+
+    @staticmethod
+    def _accumulate_evidence(agg: dict, ev: dict) -> None:
+        """把单项目证据并入聚合体（供日志透明展示读了哪些仓库/文件）。"""
+        agg["sources"] = (agg.get("sources") or []) + list(ev.get("sources") or [])
+        agg["external_sources"] = (agg.get("external_sources") or []) + list(ev.get("external_sources") or [])
+        for r in ev.get("repos") or []:
+            if r not in agg.setdefault("repos", []):
+                agg["repos"].append(r)
+        if ev.get("corpus"):
+            agg["corpus"] = (agg.get("corpus") or "") + ("\n\n" if agg.get("corpus") else "") + ev["corpus"]
+
+    def _merge_project_diagnoses(self, parts: List[ResumeDiagnosis], base: ResumeDiagnosis,
+                                 ctx: InterviewContext, lang: str) -> ResumeDiagnosis:
+        """合并各项目的诊断为一份：packets/改写直接拼（按项目归属，天然不串）；顶层判断用更强模型小幅综述。"""
+        from ...contracts.enums import JDFitVerdict as JF
+
+        merged = ResumeDiagnosis(target_role=ctx.target_role, role_type=base.role_type,
+                                 resume_digest=base.resume_digest, strengths=base.strengths)
+        for p in parts:
+            merged.packets += p.packets
+            merged.rewritten_bullets += p.rewritten_bullets
+            merged.top_highlights += p.top_highlights[:2]   # 每项目取前 2，按项目归属拼接，不跨项目混
+            merged.most_dangerous += p.most_dangerous[:2]
+            merged.external_sources += p.external_sources
+            merged.evidence_sources_used += p.evidence_sources_used
+            for s in p.strengths:
+                if s not in merged.strengths:
+                    merged.strengths.append(s)
+        order = {JF.STRONG: 3, JF.MEDIUM: 2, JF.RISKY: 1, JF.UNKNOWN: 0}
+        merged.jd_fit = max((p.jd_fit for p in parts),
+                            key=lambda f: order.get(f, 0), default=JF.UNKNOWN)
+        merged.confidence = max((p.confidence for p in parts), default=0.0)
+        merged.overall_verdict, merged.summary = self._merge_overall(parts, ctx, lang)
+        return merged
+
+    @staticmethod
+    def _merge_overall(parts: List[ResumeDiagnosis], ctx: InterviewContext,
+                       lang: str) -> Tuple[str, str]:
+        """跨项目综述：用更强模型只看各项目的 verdict/亮点/危险点（不看原始证据），产更有深度的总体判断。
+
+        给出哪个项目最支撑目标岗位、整体最大短板。无 key/失败 → 确定性拼接各项目 verdict。
+        """
+        det_verdict = "；".join(p.overall_verdict for p in parts if p.overall_verdict)[:600]
+        det_summary = "；".join(p.summary for p in parts if p.summary)[:400]
+        if not LLM.available:
+            return det_verdict, det_summary
+        briefs = []
+        for i, p in enumerate(parts, 1):
+            briefs.append(
+                f"项目{i}：判断={p.overall_verdict or p.summary or '-'}｜"
+                f"亮点={('、'.join(p.top_highlights[:3]) or '-')}｜"
+                f"危险={('、'.join(p.most_dangerous[:2]) or '-')}｜jd_fit={p.jd_fit.value}")
+        lang_line = ("用中文输出。" if lang == "zh" else "Write in English.")
+        prompt = (
+            f"目标岗位：{ctx.target_role or '后端开发+agent'}。下面是同一候选人**各项目各自**的诊断结论"
+            f"（已分项目，不要再混淆项目归属）：\n" + "\n".join(briefs) +
+            "\n\n做一个**跨项目总体判断**：①overall_verdict（≤3 句）：整体在目标岗位下站不站得住、"
+            "哪个项目最能打/最该主推、最大共性短板是什么；②summary（≤2 句）：给候选人的一句话核心建议，"
+            "**要具体、可执行、有深度**，不要泛泛而谈。" + lang_line)
+        try:
+            from pydantic import BaseModel
+            from ...contracts.enums import ModelTier
+
+            class _Overall(BaseModel):
+                overall_verdict: str = ""
+                summary: str = ""
+
+            obj, _ = LLM.complete_structured(
+                prompt=prompt, schema=_Overall, model_tier=ModelTier.SONNET,
+                model=_resume_merge_model(), max_tokens=600, timeout_s=40,
+                system=("你是资深技术面试官，做跨项目总体研判。只依据给定的各项目结论，"
+                        "绝不混淆项目归属，也不编造未提供的事实。"))
+            if obj is None:
+                return det_verdict, det_summary
+            return (obj.overall_verdict or det_verdict, obj.summary or det_summary)
+        except Exception:  # noqa: BLE001 - 综述失败退确定性拼接
+            return det_verdict, det_summary
+
+    @staticmethod
+    def _log_resume(result: ResumeDiagnosis, evidence: dict, use_deep: bool, llm_used: bool,
+                    lang: str, persisted_ref: Optional[str], latency_ms: int,
+                    meta: Optional[dict] = None) -> None:
+        """把一次简历/项目诊断的行为落独立 diagnose 日志：分层/分项目、读了哪些仓库/文件、ReAct 追读、支持度分布、是否落库。"""
+        try:
+            import os as _os
+            from collections import Counter
+            from .diag_log import DIAG_LOG, DiagnoseRecord
+
+            ext = list(evidence.get("external_sources") or [])
+            sources_detail = []
+            react_files = 0          # selected_reason 标了 ReAct·re-search 的文件数（受控追读的证据）
+            files_read = 0
+            for s in ext:
+                sel = list(getattr(s, "selected_files", []) or [])
+                rf = [f for f in sel if (getattr(f, "selected_reason", "") or "").startswith("ReAct")]
+                react_files += len(rf)
+                files_read += len(getattr(s, "items_read", []) or [])
+                sources_detail.append({
+                    "url": getattr(s, "url", ""),
+                    "kind": getattr(getattr(s, "kind", None), "value", str(getattr(s, "kind", ""))),
+                    "status": getattr(s, "status", ""),
+                    "items_read": list(getattr(s, "items_read", []) or []),
+                    "react_files": [getattr(f, "path", "") for f in rf],
+                    "suggested_next_reads": list(getattr(s, "suggested_next_reads", []) or []),
+                })
+            dist = Counter()
+            for p in result.packets:
+                dist[getattr(p.support_strength, "value", str(p.support_strength))] += 1
+            react_on = _os.environ.get("LF_REPO_REACT", "1").strip().lower() not in {"0", "false", "no", "off"}
+            mode = "deep" if use_deep else "fast"
+            m = meta or {}
+            n_proj = m.get("projects", 1)
+            layered = "分层/分项目×%d" % n_proj if m.get("per_project") else "单次"
+            DIAG_LOG.record(DiagnoseRecord(
+                kind="resume",
+                summary=(f"简历/项目诊断({layered}, mode={mode}, lang={lang}, "
+                         f"synth={m.get('synth_model') or '-'}, role={result.target_role or '-'}) → "
+                         f"{len(result.packets)} packets, 读 {files_read} 文件/源, "
+                         f"支持度{dict(dist) or '∅'}, jd_fit={getattr(result.jd_fit, 'value', result.jd_fit)}"),
+                react_triggered=react_files > 0,
+                react_rounds=react_files,
+                degraded=not llm_used,         # 未用 LLM = 退确定性规则引擎
+                persisted_ref=persisted_ref,    # 落库 chunk_id → 可经 recall_resume_diagnoses 召回
+                latency_ms=latency_ms,
+                extra={
+                    "per_project": bool(m.get("per_project")),
+                    "projects": n_proj,
+                    "synth_ok": m.get("synth_ok"),
+                    "synth_model": m.get("synth_model"),
+                    "merge_model": m.get("merge_model"),
+                    "mode": mode,
+                    "llm_used": llm_used,
+                    "repos": list(evidence.get("repos") or []),
+                    "evidence_sources": list(evidence.get("sources") or []),
+                    "external_sources": sources_detail,
+                    "react_enabled_env": react_on,
+                    "packets": len(result.packets),
+                    "support_distribution": dict(dist),
+                    "jd_fit": getattr(result.jd_fit, "value", str(result.jd_fit)),
+                    "rewritten_bullets": len(result.rewritten_bullets),
+                    "diagnosis_id": result.diagnosis_id,
+                },
+            ))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _mine_evidence(self, resume_text: str, deep: bool = False) -> dict:
         """挖掘项目证据（github 仓库 + 按 claim 源码/测试 + 博客/文档 + 上传材料）。失败/离线 → 空语料。"""
@@ -571,6 +830,32 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 class _Recommendations(BaseModel):
     items: List[str] = Field(default_factory=list)
+
+
+# --- 简历诊断的分层模型解析（三档） ---
+# 实测教训：把**逐项目大合成**也换成 claude-sonnet-4.6 会 ①JSON 截断（带思考+8000 token 上限）导致
+# 该块产出为空、整块掉队，②单块仍 ~数分钟、两块串行高达 ~9min，破前端超时。故**重合成保持快而稳的
+# gpt-4o**；真正的"更好的模型"留给**小而安全的跨项目研判**（只看各项目结论、输出 ≤5 句，不会截断）。
+def _resume_synth_model() -> str:
+    """单项目**深合成**模型：要求**快而稳**（结构化大输出，不能截断/超时）。
+
+    默认 gpt-4o（实测可靠 ~15s/块）。质量提升主要来自**分项目**（上下文只含一个项目→不串、更聚焦），
+    而非换慢模型。可经 `LF_RESUME_MODEL` 覆盖（自担超时/截断风险）。metadata 级 rerank/judge/选文件
+    走更快的 gpt-4o-mini（evidence.py `_RANK_MODEL`）。
+    """
+    import os
+    return os.environ.get("LF_RESUME_MODEL", "openai/gpt-4o")
+
+
+def _resume_merge_model() -> str:
+    """跨项目**总体研判**模型：输入小（只各项目结论）、输出 ≤5 句 → 安全地上**更强模型**。
+
+    优先 `LF_RESUME_MERGE_MODEL`；否则复用用户已配置的 `LF_SONNET_MODEL`（如 claude-sonnet-4.6，
+    在这种小任务上 ~15s 不截断）；都没有 → gpt-4o。这是分层里"用更好模型做更难的推理"的落点。
+    """
+    import os
+    return (os.environ.get("LF_RESUME_MERGE_MODEL") or os.environ.get("LF_SONNET_MODEL")
+            or "openai/gpt-4o")
 
 
 # --- helpers ---

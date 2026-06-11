@@ -37,16 +37,36 @@ _GITHUB_LINK_RE = re.compile(r"github\.com[/:][\w.\-]+/[\w.\-]+", re.IGNORECASE)
 def looks_like_resume_request(text: Optional[str]) -> bool:
     """用户文本是否在要求诊断简历/项目（区别于学习弱点诊断）。
 
-    触发：①简历关键词；②『项目/仓库/github』+『分析/诊断/拷打…』（如『分析我的项目』）；③出现 GitHub 链接。
+    触发：①简历关键词；②『项目/仓库/github』+『分析/诊断/拷打…』（如『分析我的项目』）；
+    ③单独发一个可取证的外链——GitHub 仓库/文件、技术博客、文档页（与 evidence 取证口径一致：
+    evidence 用同一 `extract_links` 抓取，能抓到的才路由进诊断；随机 unknown_url 不劫持普通问答）。
     """
     low = (text or "").lower()
     if any(cue in low for cue in _RESUME_CUES):
         return True
-    if _GITHUB_LINK_RE.search(low):
+    if _GITHUB_LINK_RE.search(low):  # 兼容无 scheme 的裸 github.com/owner/repo
+        return True
+    if _has_diagnosable_link(text or ""):
         return True
     if any(p in low for p in _PROJECT_CUES) and any(a in low for a in _ANALYZE_CUES):
         return True
     return False
+
+
+def _has_diagnosable_link(text: str) -> bool:
+    """文本是否含**可取证**外链：github(repo/file/dir) / 技术博客 / 文档页。
+
+    复用 `evidence.extract_links` 的同一分类（单一真值），只认 evidence 真能挖到的类型；
+    刻意排除 `unknown_url`，避免用户粘个普通链接就被劫持进项目诊断。失败 → False（不影响路由）。
+    """
+    try:
+        from .evidence import extract_links
+        from ...contracts.enums import ExternalSourceKind as K
+
+        diagnosable = {K.GITHUB_REPO, K.GITHUB_FILE, K.GITHUB_DIR, K.TECH_BLOG, K.DOCS_PAGE}
+        return any(s.kind in diagnosable for s in extract_links(text))
+    except Exception:  # noqa: BLE001 - 链接判定失败不影响其它路由分支
+        return False
 
 
 _INTENT_RE = re.compile(r"(?:求职意向|意向岗位|求职方向|目标岗位|应聘岗位)\s*[:：]\s*(.+)")

@@ -145,7 +145,8 @@ class ManagerAgent(BaseAgent):
             self._emit_qa_signal(out)
             self.remember_qa(user_input, out)
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.qa.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.qa.last_cost_usd,
+                                   reason=self._reason_for("qa", out))
         if agent == "diagnosis":
             # 简历诊断子路由（用户单独要求诊断简历时）：与学习弱点诊断区分开。
             # 复合"准备面试"仍走弱点诊断（trigger=composite），不在此分流。
@@ -157,7 +158,8 @@ class ManagerAgent(BaseAgent):
             self._persist_diagnosis(out.model_dump(), TimeWindow.D30.value, trigger.value,
                                     out.confidence, context.get("trace_id"))
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.diagnosis.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.diagnosis.last_cost_usd,
+                                   reason=self._reason_for("diagnosis", out))
         if agent == "planning":
             diag = context.get("diagnosis")
             if diag is not None:
@@ -176,7 +178,8 @@ class ManagerAgent(BaseAgent):
                 verb = "调整" if pin.mode == PlanMode.MODIFY else "生成"
                 self.remember_decision(f"学习路径已{verb}（{pin.mode.value}）。")
             return ResponsePayload(status=out.status, confidence=conf,
-                                   result=out.model_dump(), cost_usd=self.planning.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.planning.last_cost_usd,
+                                   reason=self._reason_for("planning", out))
         if agent == "mock":
             # 调用方可在 context["interview_context"] 显式传岗位/JD/简历/项目；否则由统一意图层
             # 从自然语言抽取（"我面 RAG 实习，拿我项目拷打我" → InterviewContext + 难度/轮次）。
@@ -188,9 +191,44 @@ class ManagerAgent(BaseAgent):
                 self._enrich_mock_from_intent(mi, user_input)
             out = self.mock.run(mi)
             status = Status.ESCALATE if out.status == "escalate" else Status.OK
-            return ResponsePayload(status=status, confidence=0.5, result=out.model_dump())
+            return ResponsePayload(status=status, confidence=0.5, result=out.model_dump(),
+                                   reason=self._reason_for("mock", out))
         return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
                                error={"code": "unknown_agent", "message": agent})
+
+    @staticmethod
+    def _reason_for(agent: str, out: Any) -> str:
+        """把子工具输出浓缩成一句「为什么」（依据/缺口/降级），供 Manager replan 看背后理由。
+
+        只读 out 的稳定字段（getattr 兜底），≤160 字；不外传给用户。
+        """
+        try:
+            if agent == "qa":
+                cites = len(getattr(out, "citations", []) or [])
+                degraded = getattr(out, "degraded", False)
+                verdict = getattr(out, "verifier_verdict", "") or getattr(out, "verdict", "")
+                bits = [f"conf={getattr(out, 'confidence', 0):.2f}", f"引用{cites}条"]
+                if degraded:
+                    bits.append("降级(无证据→降断言)")
+                if verdict:
+                    bits.append(f"核验={verdict}")
+                return "；".join(bits)
+            if agent == "diagnosis":
+                clusters = getattr(out, "clusters", []) or []
+                top = "、".join(getattr(c, "topic", "") for c in clusters[:2]) or "无明显弱点"
+                recs = len(getattr(out, "recommendations", []) or [])
+                return (f"conf={getattr(out, 'confidence', 0):.2f}；{len(clusters)}簇[{top}]；"
+                        f"{recs}条建议" + ("；信号不足" if getattr(out, "confidence", 0) < 0.5 else ""))
+            if agent == "planning":
+                diff = getattr(out, "diff", None)
+                adds = len(getattr(diff, "add_nodes", []) or []) if diff else 0
+                mods = len(getattr(diff, "update_nodes", []) or []) if diff else 0
+                return f"status={getattr(getattr(out, 'status', ''), 'value', out.status)}；diff +{adds}/~{mods}"
+            if agent == "mock":
+                return f"status={getattr(out, 'status', '')}；轮次推进/评分采集中"
+        except Exception:  # noqa: BLE001 - reason 仅供观测，绝不阻断
+            pass
+        return ""
 
     def _dispatch_resume_diagnosis(self, user_input: str, context: Dict[str, Any]) -> ResponsePayload:
         """诊断简历问题：取简历全文（context 显式 > 上传附件）→ DiagnosisAgent.diagnose_resume。
@@ -297,12 +335,14 @@ class ManagerAgent(BaseAgent):
         if not LLM.available or self.skill is None:
             return self._fallback_next(user_input, done, context)
 
+        # 不只喂结构化结论（result），还喂子工具的「为什么」(reason：依据/缺口/降级)——让 replan
+        # 看到结论背后的理由（如 diagnosis 信号不足、qa 降级无证据），而非只看一行 dict。
         summaries = "\n".join(
-            f"- {a}: {str(r.result)[:100]}" for a, r in zip(done, responses)
+            f"- {a}: {r.reason or '-'}（结论：{str(r.result)[:60]}）" for a, r in zip(done, responses)
         ) or "（无）"
         # 简短 prompt：长 prompt + “已满足→finish” 会把弱模型带偏成过早 finish。
         prompt = (
-            f"用户请求：{user_input}\n已做步骤：{done or '无'}\n各步结果：\n{summaries}\n\n"
+            f"用户请求：{user_input}\n已做步骤：{done or '无'}\n各步结果（含为什么）：\n{summaries}\n\n"
             "下一步调哪个子 agent？\n"
             "qa=答概念/技术问题；diagnosis=找薄弱点；planning=排学习计划(通常先有 diagnosis)；"
             "mock=模拟面试；finish=用户请求已被满足。"

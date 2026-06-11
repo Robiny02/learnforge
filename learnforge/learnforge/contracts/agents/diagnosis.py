@@ -238,7 +238,7 @@ class ResumeDiagnosis(BaseModel):
     )
 
     def search_text(self) -> str:
-        """供 FTS/向量检索命中的可读正文（标题 + 总体判断 + 亮点 + 各 claim 片段）。"""
+        """供 FTS/向量检索命中的可读正文（标题 + 总体判断 + 亮点 + 各 claim 片段 + 项目/来源名）。"""
         lines = [f"简历诊断：{self.target_role or '通用'}（{self.role_type or '未定向'}）",
                  f"JD 匹配：{self.jd_fit.value}", self.overall_verdict or self.summary]
         lines += [f"亮点：{h}" for h in self.top_highlights]
@@ -247,4 +247,12 @@ class ResumeDiagnosis(BaseModel):
                          f"{p.technical_highlight}")
         for it in self.issues:  # 兼容：v1 issues 也进检索正文
             lines.append(f"[{it.category.value}/{it.severity.value}] {it.excerpt} —— {it.problem}")
+        # 项目/仓库名进正文：claim 常被改写成泛词，按项目名（如 LearnForge）召回才不落空。
+        # 来源含 github.com/<owner>/<repo> 与 github:<repo>/<path> 标签，repo 名即项目名的字面量。
+        if self.resume_digest:
+            lines.append(f"简历指纹：{self.resume_digest}")
+        for s in self.external_sources:
+            if getattr(s, "url", ""):
+                lines.append(f"来源：{s.url}")
+        lines += [f"读取：{src}" for src in self.evidence_sources_used]
         return "\n".join(x for x in lines if x)

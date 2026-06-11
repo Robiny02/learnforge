@@ -62,6 +62,97 @@ def claim_tokens(text: str) -> Set[str]:
     return _split_tokens(text)
 
 
+# 简历里"项目/经历"区块的起止标题（用于把项目经历段从教育/技能等其它段里框出来）。
+_PROJECT_SECTION_HEADS = ("项目经历", "项目经验", "工作经历", "工作经验", "实习经历", "实习经验",
+                          "research experience", "project experience", "projects", "experience")
+_OTHER_SECTION_HEADS = ("教育经历", "教育背景", "技能", "专业技能", "技术栈", "荣誉", "获奖",
+                        "个人", "自我评价", "证书", "语言", "兴趣", "education", "skills",
+                        "honors", "awards", "publications", "summary", "objective")
+_BULLET_PREFIXES = ("•", "·", "▪", "◦", "‣", "-", "*", "–", "—", "·")
+# 项目标题里常见的"续行"前缀——这些行属于上一个项目，不是新项目标题。
+_CONT_PREFIXES = ("背景", "技术栈", "项目背景", "背景与技术栈", "职责", "成果", "概述", "简介",
+                  "http://", "https://", "github.com")
+
+
+def _is_bullet(line: str) -> bool:
+    return line.lstrip().startswith(_BULLET_PREFIXES)
+
+
+def _is_section_head(line: str, heads) -> bool:
+    low = line.strip().lower()
+    return bool(low) and len(low) <= 24 and any(h in low for h in heads)
+
+
+# 项目"锚点"：每个项目标题下方几乎必有 github 链接或一段日期区间——用它们定位项目，
+# 而不是用换行（PDF 抽取会把长 bullet 硬换行，续行不带 bullet，易被误判成新项目）。
+_GH_LINK_RE = re.compile(r"github\.com[/:][\w.\-]+/[\w.\-]+", re.IGNORECASE)
+_DATE_RANGE_RE = re.compile(
+    r"(?:19|20)\d{2}\s*[.\-/年]?\s*\d{0,2}\s*[\-–—~至到]\s*"
+    r"(?:(?:19|20)\d{2}|至今|present|now|现在|今)", re.IGNORECASE)
+
+
+def _is_project_anchor(line: str) -> bool:
+    """该行是否是"项目顶部锚点"（含 github 链接或日期区间）——每个项目顶部各有一个。"""
+    s = line.strip()
+    return bool(_GH_LINK_RE.search(s) or _DATE_RANGE_RE.search(s))
+
+
+def _looks_like_continuation(line: str) -> bool:
+    s = line.strip()
+    low = s.lower()
+    return any(low.startswith(p) for p in _CONT_PREFIXES)
+
+
+def split_resume_projects(resume_text: str) -> List[str]:
+    """把简历的**项目/经历**段拆成逐个项目的文本块（通用，对 PDF 硬换行鲁棒）。
+
+    思路：项目标题下方必有 **github 链接或日期区间** 作为顶部锚点（每个项目各一个，bullet 续行不会
+    跟这些）。先框定"项目经历"段，再以每个锚点反推其**标题行**（锚点上方最近的非 bullet/非续行/非锚点行，
+    或锚点行本身=标题+链接同行），相邻标题之间即一个项目块。
+
+    找不到项目段、锚点 < 2 个或切出 < 2 块 → 返回 `[整份简历]`（退回单块，走原单次合成路径）。
+    """
+    lines = (resume_text or "").splitlines()
+    # ① 框定项目段 [start, end)。
+    start = next((i + 1 for i, ln in enumerate(lines)
+                  if _is_section_head(ln, _PROJECT_SECTION_HEADS)), None)
+    if start is None:
+        return [resume_text or ""]
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _is_section_head(lines[i], _OTHER_SECTION_HEADS):
+            end = i
+            break
+
+    # ② 锚点 → 标题行（项目起点）。
+    anchors = [i for i in range(start, end) if _is_project_anchor(lines[i])]
+    if len(anchors) < 2:
+        return [resume_text or ""]
+    bounds: List[int] = []
+    for a in anchors:
+        title = a  # 默认：标题与锚点同行（如「…系统 https://github.com/...」）
+        j = a - 1
+        while j >= start and not lines[j].strip():  # 跳过空行
+            j -= 1
+        if (j >= start and not _is_bullet(lines[j]) and not _is_project_anchor(lines[j])
+                and not _looks_like_continuation(lines[j])):
+            title = j  # 标题在锚点上一行
+        if not bounds or title - bounds[-1] > 1:  # 相邻锚点共用一个标题则合并
+            bounds.append(title)
+    bounds = sorted(set(bounds))
+    if len(bounds) < 2:
+        return [resume_text or ""]
+
+    # ③ 相邻标题之间切块；首个标题之前的内容并入第一个项目。
+    blocks: List[str] = []
+    edges = bounds + [end]
+    for k in range(len(bounds)):
+        seg = "\n".join(lines[edges[k]:edges[k + 1]]).strip()
+        if seg:
+            blocks.append(seg)
+    return blocks if len(blocks) >= 2 else [resume_text or ""]
+
+
 def extract_project_section(resume_text: str, repo: str) -> str:
     """抽出**引用该 repo 的那一段项目描述**（按项目分块，不整份简历混抽）。
 
