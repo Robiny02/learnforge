@@ -33,7 +33,8 @@ _CAPS = ("qa", "planning", "diagnosis", "mock", "note")
 _CAP_KEYWORDS: Dict[str, tuple] = {
     "mock": ("面试", "mock", "模拟面试", "模拟", "刷题", "出题", "interview", "practice",
              "考我", "考考我", "面试我", "面我"),
-    "diagnosis": ("诊断", "弱点", "薄弱", "复盘", "短板", "diagnose", "weakness", "assess"),
+    "diagnosis": ("诊断", "弱点", "薄弱", "复盘", "短板", "diagnose", "weakness", "assess",
+                  "简历", "履历", "resume", "cv", "github", "仓库", "分析我的项目", "项目分析"),
     "planning": ("计划", "规划", "学习路径", "路线", "安排", "路径", "plan", "roadmap", "schedule"),
 }
 # 复合"准备面试"线索 → 多意图（diagnosis 先行、planning 后继，见 §5.6）。
@@ -119,6 +120,16 @@ class Dispatcher:
         if forced in _CAPS:
             return Route(mode="single", capability=forced, confidence=0.95, signals=["forced_mode"])
 
+        # 简历/项目分析意图（含 github 链接、『分析我的项目』）→ 直接判 diagnosis（项目级简历诊断），
+        # 不交 L1 LLM（它易把『分析项目』误判成 qa）。具体走弱点诊断还是项目诊断由 Manager 子路由定。
+        try:
+            from ..agents.diagnosis.resume import looks_like_resume_request
+            if looks_like_resume_request(t):
+                return Route(mode="single", capability="diagnosis", confidence=0.9,
+                             signals=["resume_project"])
+        except Exception:  # noqa: BLE001 - 短路失败不阻断，照常走下游
+            pass
+
         # 自包含纯概念问句（八股「什么是 X / 介绍一下 X / 为什么…」）→ 直接 qa，免一次 LLM 路由
         # 往返。这是最常见路径，省掉 _INTENT_MODEL（默认 gpt-4o）的网络调用，显著降延迟；自包含句
         # 本就不借上文（见 _apply_carry），短路与既有承接语义一致。带能力关键词/信号的不走此路。
@@ -156,7 +167,12 @@ class Dispatcher:
         win = ""
         if ctx.get("summary"):
             win += f"会话概要：{ctx['summary']}\n"
-        anchors = [f"  「{a.get('text', '')}」(判为 {a.get('capability', '?')})"
+        # 锚点带 kind 标签：origin=会话原始诉求(留头)、attachment=已上传附件(可跨轮引用)、
+        # thread_start/artifact/clarify=主线转折/产物/待澄清——让路由器看清"早于近窗"的关键节点。
+        _KIND_TAG = {"origin": "原始诉求", "attachment": "已上传附件",
+                     "thread_start": "主线起点", "artifact": "已有产物", "clarify": "待澄清"}
+        anchors = [f"  [{_KIND_TAG.get(a.get('kind', ''), a.get('kind', '节点'))}]"
+                   f"「{a.get('text', '')}」(判为 {a.get('capability', '?')})"
                    for a in (ctx.get("anchors") or []) if a.get("text")]
         if anchors:
             win += "关键节点(可能早于近窗)：\n" + "\n".join(anchors) + "\n"

@@ -145,14 +145,21 @@ class ManagerAgent(BaseAgent):
             self._emit_qa_signal(out)
             self.remember_qa(user_input, out)
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.qa.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.qa.last_cost_usd,
+                                   reason=self._reason_for("qa", out))
         if agent == "diagnosis":
+            # 简历诊断子路由（用户单独要求诊断简历时）：与学习弱点诊断区分开。
+            # 复合"准备面试"仍走弱点诊断（trigger=composite），不在此分流。
+            from ..agents.diagnosis.resume import looks_like_resume_request
+            if not context.get("composite") and looks_like_resume_request(user_input):
+                return self._dispatch_resume_diagnosis(user_input, context)
             trigger = DiagnosisTrigger.COMPOSITE if context.get("composite") else DiagnosisTrigger.USER
             out = self.diagnosis.run(DiagnosisInput(time_window=TimeWindow.D30, trigger=trigger))
             self._persist_diagnosis(out.model_dump(), TimeWindow.D30.value, trigger.value,
                                     out.confidence, context.get("trace_id"))
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.diagnosis.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.diagnosis.last_cost_usd,
+                                   reason=self._reason_for("diagnosis", out))
         if agent == "planning":
             diag = context.get("diagnosis")
             if diag is not None:
@@ -171,7 +178,8 @@ class ManagerAgent(BaseAgent):
                 verb = "调整" if pin.mode == PlanMode.MODIFY else "生成"
                 self.remember_decision(f"学习路径已{verb}（{pin.mode.value}）。")
             return ResponsePayload(status=out.status, confidence=conf,
-                                   result=out.model_dump(), cost_usd=self.planning.last_cost_usd)
+                                   result=out.model_dump(), cost_usd=self.planning.last_cost_usd,
+                                   reason=self._reason_for("planning", out))
         if agent == "mock":
             # 调用方可在 context["interview_context"] 显式传岗位/JD/简历/项目；否则由统一意图层
             # 从自然语言抽取（"我面 RAG 实习，拿我项目拷打我" → InterviewContext + 难度/轮次）。
@@ -183,9 +191,72 @@ class ManagerAgent(BaseAgent):
                 self._enrich_mock_from_intent(mi, user_input)
             out = self.mock.run(mi)
             status = Status.ESCALATE if out.status == "escalate" else Status.OK
-            return ResponsePayload(status=status, confidence=0.5, result=out.model_dump())
+            return ResponsePayload(status=status, confidence=0.5, result=out.model_dump(),
+                                   reason=self._reason_for("mock", out))
         return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
                                error={"code": "unknown_agent", "message": agent})
+
+    @staticmethod
+    def _reason_for(agent: str, out: Any) -> str:
+        """把子工具输出浓缩成一句「为什么」（依据/缺口/降级），供 Manager replan 看背后理由。
+
+        只读 out 的稳定字段（getattr 兜底），≤160 字；不外传给用户。
+        """
+        try:
+            if agent == "qa":
+                cites = len(getattr(out, "citations", []) or [])
+                degraded = getattr(out, "degraded", False)
+                verdict = getattr(out, "verifier_verdict", "") or getattr(out, "verdict", "")
+                bits = [f"conf={getattr(out, 'confidence', 0):.2f}", f"引用{cites}条"]
+                if degraded:
+                    bits.append("降级(无证据→降断言)")
+                if verdict:
+                    bits.append(f"核验={verdict}")
+                return "；".join(bits)
+            if agent == "diagnosis":
+                clusters = getattr(out, "clusters", []) or []
+                top = "、".join(getattr(c, "topic", "") for c in clusters[:2]) or "无明显弱点"
+                recs = len(getattr(out, "recommendations", []) or [])
+                return (f"conf={getattr(out, 'confidence', 0):.2f}；{len(clusters)}簇[{top}]；"
+                        f"{recs}条建议" + ("；信号不足" if getattr(out, "confidence", 0) < 0.5 else ""))
+            if agent == "planning":
+                diff = getattr(out, "diff", None)
+                adds = len(getattr(diff, "add_nodes", []) or []) if diff else 0
+                mods = len(getattr(diff, "update_nodes", []) or []) if diff else 0
+                return f"status={getattr(getattr(out, 'status', ''), 'value', out.status)}；diff +{adds}/~{mods}"
+            if agent == "mock":
+                return f"status={getattr(out, 'status', '')}；轮次推进/评分采集中"
+        except Exception:  # noqa: BLE001 - reason 仅供观测，绝不阻断
+            pass
+        return ""
+
+    def _dispatch_resume_diagnosis(self, user_input: str, context: Dict[str, Any]) -> ResponsePayload:
+        """诊断简历问题：取简历全文（context 显式 > 上传附件）→ DiagnosisAgent.diagnose_resume。
+
+        简历来源全空 → NEEDS_INPUT 提示上传，不硬凑。诊断结果已在 diagnose_resume 内存记忆可召回；
+        这里不写 diagnosis_reports（那是弱点诊断的 schema），结果用 kind 标注避免与弱点结论混淆。
+        """
+        ic = context.get("interview_context")
+        ctx = InterviewContext(**ic) if isinstance(ic, dict) else (ic or InterviewContext())
+        # 简历文本来源：context 显式传入 > 自动从上传附件重建 > resume_claims 兜底。
+        resume_text = str(context.get("resume_text") or "").strip()
+        if not resume_text:
+            from ..agents.diagnosis.resume import load_resume_text
+            resume_text = load_resume_text(db_path=self._db_path,
+                                           session_id=context.get("session_id"))
+        if not resume_text and ctx.resume_claims:
+            resume_text = "\n".join(ctx.resume_claims)
+        if not resume_text:
+            return ResponsePayload(
+                status=Status.NEEDS_INPUT, confidence=0.0,
+                result={"kind": "resume_diagnosis",
+                        "message": "未找到简历内容。请上传简历文件（PDF/MD/TXT）或直接粘贴简历正文后再诊断。"},
+            )
+        diag = self.diagnosis.diagnose_resume(resume_text, ctx, persist=True)
+        result = diag.model_dump()
+        result["kind"] = "resume_diagnosis"  # 判别标签：与弱点 DiagnosisResult 区分
+        return ResponsePayload(status=Status.OK, confidence=diag.confidence,
+                               result=result, cost_usd=self.diagnosis.last_cost_usd)
 
     @staticmethod
     def _enrich_mock_from_intent(mi: MockInput, user_input: str) -> None:
@@ -216,7 +287,9 @@ class ManagerAgent(BaseAgent):
             meta["handoff_summary"] = env.handoff_summary
 
         if agent == "diagnosis" and resp.status == Status.OK:
-            context["diagnosis"] = resp.result
+            # 简历诊断结果 shape 不同（kind=resume_diagnosis），不灌进供 planning 消费的 diagnosis 槽。
+            if resp.result.get("kind") != "resume_diagnosis":
+                context["diagnosis"] = resp.result
         if agent == "planning" and resp.status == Status.OK:
             # 唯一写者：把 PlanningAgent 的增量 diff 落库 + emit PATH_CHANGED（§2a/§3.7/§4c）。
             committed_path = self._commit_planning_result(resp.result, context, trace_id)
@@ -262,12 +335,14 @@ class ManagerAgent(BaseAgent):
         if not LLM.available or self.skill is None:
             return self._fallback_next(user_input, done, context)
 
+        # 不只喂结构化结论（result），还喂子工具的「为什么」(reason：依据/缺口/降级)——让 replan
+        # 看到结论背后的理由（如 diagnosis 信号不足、qa 降级无证据），而非只看一行 dict。
         summaries = "\n".join(
-            f"- {a}: {str(r.result)[:100]}" for a, r in zip(done, responses)
+            f"- {a}: {r.reason or '-'}（结论：{str(r.result)[:60]}）" for a, r in zip(done, responses)
         ) or "（无）"
         # 简短 prompt：长 prompt + “已满足→finish” 会把弱模型带偏成过早 finish。
         prompt = (
-            f"用户请求：{user_input}\n已做步骤：{done or '无'}\n各步结果：\n{summaries}\n\n"
+            f"用户请求：{user_input}\n已做步骤：{done or '无'}\n各步结果（含为什么）：\n{summaries}\n\n"
             "下一步调哪个子 agent？\n"
             "qa=答概念/技术问题；diagnosis=找薄弱点；planning=排学习计划(通常先有 diagnosis)；"
             "mock=模拟面试；finish=用户请求已被满足。"
@@ -606,7 +681,11 @@ class ManagerAgent(BaseAgent):
 
     # ---------------- 短期会话记忆（recent 原文 + 压缩摘要，§6b/§6c session 段）----------------
     def load_session_memory(self, session_id: Optional[str]) -> Optional[str]:
-        """渲染会话短期记忆 = 早期压缩摘要 + 最近 N 轮原文（无记录 → None）。best-effort。"""
+        """渲染会话短期记忆 = 固定重要结果(pinned) + 早期压缩摘要 + 最近原文轮（无记录 → None）。
+
+        pinned 置顶（永不压缩的重要结果，全文）；其后是 compaction 折叠出的早期摘要 + 仍保留的
+        最近原文轮。best-effort。
+        """
         if not session_id:
             return None
         try:
@@ -617,6 +696,9 @@ class ManagerAgent(BaseAgent):
                 MEMORY_LOG.record(READ, "加载会话记忆", "无历史，跳过")
                 return None
             parts: List[str] = []
+            pinned = (st.get("active_task") or {}).get("pinned") or []
+            for p in pinned:
+                parts.append(f"[重要结果·固定] 用户：{p.get('user', '')}\n回复：{p.get('reply', '')}")
             if st.get("summary"):
                 parts.append(f"[早期会话摘要] {st['summary']}")
             rounds = st.get("recent_messages") or []
@@ -627,7 +709,7 @@ class ManagerAgent(BaseAgent):
                 return None
             MEMORY_LOG.record(
                 READ, "加载会话记忆",
-                f"{len(rounds)} 轮原文 + {'有' if st.get('summary') else '无'}早期摘要",
+                f"{len(pinned)} 条固定 + {len(rounds)} 轮原文 + {'有' if st.get('summary') else '无'}早期摘要",
             )
             MEMORY_LOG.record(INJECT, "注入会话摘要", "进入 prompt", count=1)
             return "\n".join(parts)
@@ -640,41 +722,190 @@ class ManagerAgent(BaseAgent):
         user_input: str,
         reply: str,
         active_mock: Optional[str] = None,
+        *,
+        important: bool = False,
     ) -> Optional[str]:
-        """本轮收尾：追加一轮原文；超过 N 轮则把溢出轮压成 summary，只留最近 N 轮。返回 summary。"""
+        """本轮收尾：追加一轮原文 → Claude Code 式**会话级 compaction**（按 token 阈值，不按轮数）。
+
+        统计 session context tokens = summary + 最近原文轮（**不含 pinned**）；超
+        SESSION_COMPACTION_THRESHOLD_TOKENS 才把最旧轮逐个折叠进 summary，直到 ≤TARGET，但至少
+        保留 SESSION_MIN_RECENT_ROUNDS 轮。`important=True` 的轮额外存入 **pinned 区**，永不被
+        compaction 折叠、渲染时置顶全文注入（重要结果保护）。返回 summary。
+        """
         if not session_id:
             return None
         try:
-            from ..config import SESSION_RECENT_ROUNDS
+            from ..config import (
+                SESSION_COMPACTION_TARGET_TOKENS,
+                SESSION_COMPACTION_THRESHOLD_TOKENS,
+                SESSION_MAX_PINNED,
+                SESSION_MIN_RECENT_ROUNDS,
+                SESSION_PIN_MAX_CHARS,
+                SESSION_RESUMMARIZE_EVERY,
+            )
             from ..memory.base import MEMORY
+            from ..memory.tokens import count_tokens
+            from ..llm.client import LLM
             from ..storage.repositories import SessionStateRepository
 
             repo = SessionStateRepository(db_path=self._db_path)
             st = repo.get(session_id) or {}
             summary = st.get("summary") or ""
+            task = dict(st.get("active_task") or {})
+            fold_count = int(task.get("fold_count", 0))
+            pinned = list(task.get("pinned") or [])
             rounds = list(st.get("recent_messages") or [])
-            rounds.append({"user": (user_input or "")[:500], "reply": (reply or "")[:500]})
+            new_round = {"user": (user_input or "")[:500], "reply": (reply or "")[:500]}
+            rounds.append(new_round)
 
-            if len(rounds) > SESSION_RECENT_ROUNDS:
-                overflow = rounds[:-SESSION_RECENT_ROUNDS]
-                rounds = rounds[-SESSION_RECENT_ROUNDS:]
-                # 只摘要"新溢出"的轮并追加到既有摘要后；绝不把旧摘要再喂回摘要器
-                # （否则离线兜底会递归套娃、无限膨胀，REQUIREMENTS 测试 §14-7）。
-                folded = MEMORY.summarize(
-                    {"intent": "session_recap",
-                     "key_facts": [f"用户：{r['user'][:80]} / 回复：{r['reply'][:80]}"
-                                   for r in overflow],
-                     "constraints": [], "open_items": []}
-                )
-                summary = f"{summary} ｜ {folded}".strip(" ｜") if summary else folded
-                summary = summary[-800:]  # 防膨胀：保留最近折叠内容
-                MEMORY_LOG.record(MAINTAIN, "压缩会话记忆",
-                                  f"{len(overflow)} 轮压成摘要，保留最近 {SESSION_RECENT_ROUNDS} 轮")
+            # 重要结果保护：important 轮进 pinned（FIFO cap），永不参与 compaction、永不折叠。
+            if important and (new_round["user"] or new_round["reply"]):
+                pinned.append({"user": new_round["user"][:SESSION_PIN_MAX_CHARS],
+                               "reply": new_round["reply"][:SESSION_PIN_MAX_CHARS]})
+                if len(pinned) > SESSION_MAX_PINNED:
+                    pinned = pinned[-SESSION_MAX_PINNED:]  # FIFO：丢最旧 pin
+                MEMORY_LOG.record(WRITE, "固定重要结果",
+                                  f"pin 第 {len(pinned)} 条，永不压缩")
 
-            repo.upsert(session_id, summary, {"active_mock": active_mock}, rounds)
+            # session context tokens（pinned 不可压 → 不计入触发，避免压不下去；它单独占注入预算）。
+            def _ctx_tokens() -> int:
+                t = count_tokens(summary)
+                for r in rounds:
+                    t += count_tokens(r.get("user", "")) + count_tokens(r.get("reply", ""))
+                return t
+
+            # 触发：本轮结束后 token 超阈 → 折叠最旧轮直到 ≤TARGET（至少留 MIN_RECENT 轮）。
+            if _ctx_tokens() > SESSION_COMPACTION_THRESHOLD_TOKENS:
+                overflow: List[Dict[str, str]] = []
+                while (_ctx_tokens() > SESSION_COMPACTION_TARGET_TOKENS
+                       and len(rounds) > SESSION_MIN_RECENT_ROUNDS):
+                    overflow.append(rounds.pop(0))
+                if overflow:
+                    fold_count += 1
+                    # #2 周期性全量重摘：每 N 次折叠，把"旧 summary + 新溢出"**重新组织**成结构化纯
+                    # 文本（目标/决策/未决项/主题），修正增量折叠的漂移与碎片化。仅 LLM 可用时触发——
+                    # 离线严格保持纯增量（绝不把旧摘要喂回离线摘要器，避免递归套娃/膨胀，§14-7）。
+                    if LLM.available and fold_count % SESSION_RESUMMARIZE_EVERY == 0:
+                        summary = self._resummarize_session(summary, overflow)
+                        MEMORY_LOG.record(MAINTAIN, "全量重摘会话记忆",
+                                          f"第 {fold_count} 次折叠（token 超阈触发结构化重组），保留最近 {len(rounds)} 轮")
+                    else:
+                        # 增量折叠：只摘要"新溢出"的轮并追加到既有摘要后（旧摘要不再喂回摘要器）。
+                        folded = MEMORY.summarize(
+                            {"intent": "session_recap",
+                             "key_facts": [f"用户：{r['user'][:80]} / 回复：{r['reply'][:80]}"
+                                           for r in overflow],
+                             "constraints": [], "open_items": []}
+                        )
+                        # LLM 可用时 summarize 会返回 JSON(含 key_facts/转义引号) → 规整成纯文本，
+                        # 避免原始 JSON 污染会话 summary（§14-7 在 LLM 模式下也保持无嵌套）。
+                        folded = self._summary_to_text(folded)
+                        summary = f"{summary} ｜ {folded}".strip(" ｜") if summary else folded
+                        summary = summary[-800:]  # 防膨胀：保留最近折叠内容
+                        MEMORY_LOG.record(MAINTAIN, "压缩会话记忆",
+                                          f"{len(overflow)} 轮压成摘要（token 超阈），保留最近 {len(rounds)} 轮")
+
+            task["active_mock"] = active_mock
+            task["fold_count"] = fold_count
+            task["pinned"] = pinned
+            repo.upsert(session_id, summary, task, rounds)
             return summary
         except Exception:
             return None
+
+    @staticmethod
+    def turn_is_important(citations: Optional[list] = None,
+                          plan: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """重要结果判定（→ record_turn(important=True) 进 pinned 永不压缩）。
+
+        信号：① 带引用的可核验答案（citations 非空）；② 诊断/规划/模拟面试的结构化产出
+        （plan 命中 diagnosis/planning/mock）。纯闲聊 QA（无引用）不 pin。
+        """
+        if citations:
+            return True
+        agents = {str((s or {}).get("agent") or "").lower() for s in (plan or [])}
+        return bool(agents & {"diagnosis", "planning", "mock"})
+
+    @staticmethod
+    def _summary_to_text(s: str) -> str:
+        """把折叠摘要规整成**纯文本**：LLM 返回 JSON({intent,key_facts,...}) 时抽值拼成中文短句，
+
+        避免原始 JSON（含 key_facts/转义引号/markdown 围栏）污染会话 summary
+        （§14-7 在 LLM 模式下亦无嵌套）。非 JSON → 原样返回。
+        """
+        import re as _re
+
+        t = (s or "").strip()
+        if not t:
+            return t
+        # 先剥 markdown 代码围栏 ```json ... ```（Haiku 常这样包 JSON）。
+        fence = _re.match(r"^```[a-zA-Z]*\s*(.*?)\s*```$", t, _re.DOTALL)
+        if fence:
+            t = fence.group(1).strip()
+        if "key_facts" not in t and not t.lstrip().startswith("{"):
+            return t
+        try:
+            import json as _json
+            d = _json.loads(t)
+            if isinstance(d, dict):
+                bits: List[str] = []
+                if d.get("intent"):
+                    bits.append(str(d["intent"]))
+                for k in ("key_facts", "constraints", "open_items"):
+                    v = d.get(k)
+                    if isinstance(v, list):
+                        bits += [str(x) for x in v if x]
+                    elif v:
+                        bits.append(str(v))
+                return "；".join(bits)[:800] or t
+        except Exception:  # noqa: BLE001 - 不是合法 JSON → 去结构噪声兜底
+            pass
+        t = _re.sub(r'```[a-zA-Z]*|["{}\[\]`]|key_facts|constraints|open_items|intent', "", t)
+        t = _re.sub(r"(?m)^\s*[:：,，]\s*$", "", t)   # 去掉只剩冒号/逗号的空行
+        return _re.sub(r"\n{2,}", "\n", t).strip()[:800]
+
+    def _resummarize_session(self, prior_summary: str, overflow: List[Dict[str, str]]) -> str:
+        """#2：把（旧 summary + 新溢出轮）重摘成**结构化纯文本**（目标/决策/未决项/主题）。
+
+        仅在 LLM 可用时由 record_turn 调用。喂旧 summary 是安全的：LLM 输出经固定 schema **有界**且
+        渲染为纯文本（无 JSON 嵌套），不会像离线兜底那样递归膨胀（§14-7）。失败 → 退回旧 summary。
+        """
+        from ..llm.client import LLM, LLMStructuredError, LLMUnavailable
+        from ..contracts.enums import ModelTier
+        from pydantic import BaseModel, Field
+
+        class _SessionDigest(BaseModel):
+            goal: str = Field(default="", description="会话的原始诉求/总目标")
+            decisions: List[str] = Field(default_factory=list, description="已达成的结论/决策")
+            open_items: List[str] = Field(default_factory=list, description="未决/待办")
+            topics: List[str] = Field(default_factory=list, description="聊过的主题")
+
+        convo = "\n".join(f"用户：{r['user'][:120]} / 回复：{r['reply'][:120]}" for r in overflow)
+        prompt = (
+            f"已有会话概要（参考，可能零散）：\n{prior_summary or '（无）'}\n\n"
+            f"新增对话（更近）：\n{convo}\n\n"
+            "把两者**合并重组**成一份简洁的会话状态（不要逐轮流水账）：goal=贯穿全程的原始诉求；"
+            "decisions=已确定的结论；open_items=仍未决/待办；topics=聊过的主题。各 ≤4 条、每条 ≤30 字。")
+        try:
+            obj, res = LLM.complete_structured(
+                prompt, _SessionDigest, model_tier=ModelTier.HAIKU, max_tokens=400, timeout_s=20,
+                system="你把多轮对话压成结构化会话状态，只输出 schema 字段，简洁、不编造。")
+            self.last_cost_usd = getattr(res, "cost_usd", 0.0)
+        except (LLMUnavailable, LLMStructuredError, Exception):  # noqa: BLE001
+            return prior_summary
+        if obj is None:
+            return prior_summary
+        # 渲染为**纯文本**（绝不 json.dumps，保证无 key_facts/转义引号嵌套，§14-7）。
+        parts = []
+        if obj.goal:
+            parts.append(f"目标：{obj.goal}")
+        if obj.decisions:
+            parts.append("已决策：" + "；".join(obj.decisions[:4]))
+        if obj.open_items:
+            parts.append("未决项：" + "；".join(obj.open_items[:4]))
+        if obj.topics:
+            parts.append("聊过：" + "、".join(obj.topics[:5]))
+        return "\n".join(parts)[:800] or prior_summary
 
     # ---------------- AGGREGATE ----------------
     def aggregate(
@@ -759,6 +990,15 @@ class ManagerAgent(BaseAgent):
         if r.status != Status.OK:
             return None
         res = r.result or {}
+        # 简历诊断：直接用结构化渲染器（含逐条证据包/改写），不要再过 LLM 聚合重写（会重写+截断）。
+        if res.get("kind") == "resume_diagnosis":
+            try:
+                from ..agents.diagnosis.resume import render_resume_diagnosis
+                from ..contracts.agents.diagnosis import ResumeDiagnosis
+                diag = ResumeDiagnosis.model_validate({k: v for k, v in res.items() if k != "kind"})
+                return render_resume_diagnosis(diag)
+            except Exception:  # noqa: BLE001 - 渲染失败回退到下游聚合
+                pass
         ans = res.get("answer")  # QA 的自然语言答案
         if isinstance(ans, str) and len(ans.strip()) >= 10:
             return ans.strip()

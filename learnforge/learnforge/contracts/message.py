@@ -78,6 +78,11 @@ class ResponsePayload(BaseModel):
     status: Status = Field(..., description="ok/error/partial/needs_input/escalate。")
     confidence: float = Field(..., ge=0.0, le=1.0, description="置信度，<0.4 触发 Manager replan。")
     result: Dict = Field(default_factory=dict, description="结构化结果（各 agent 的 *Output 序列化）。")
+    reason: str = Field(
+        default="",
+        description="子工具给 Manager 的简短「为什么」（如 degraded/置信/覆盖/缺口）——供 replan 决策"
+                    "看到结论背后的依据，不只看结构化结论；不外传给用户。",
+    )
     cost_usd: float = Field(default=0.0, description="本次调用累计成本。")
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     error: Optional[ErrorInfo] = None

@@ -663,8 +663,10 @@ def handle_request(mgr, text: str, width: int) -> None:
     responses, meta, plan = mgr.execute_dynamic(text, trace_id=trace_id)
     agg = mgr.aggregate(responses, plan, meta)
     agg["trace_id"] = trace_id
-    # 短期记忆：收尾追加本轮原文（超出则压缩），供下一轮载入。
-    mgr.record_turn(_SESSION_ID, text, agg.get("reply_text") or "")
+    # 短期记忆：收尾追加本轮原文（超 token 阈值则 compaction），供下一轮载入。
+    # 重要结果（带引用答案 / 诊断·规划·结算）→ pin 不压缩。
+    mgr.record_turn(_SESSION_ID, text, agg.get("reply_text") or "",
+                    important=mgr.turn_is_important(agg.get("citations"), plan))
     render_exchange(plan, responses, agg, 0, width)
     render_memory_panel(width)
 

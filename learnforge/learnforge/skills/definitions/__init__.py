@@ -9,7 +9,7 @@ Phase 3 定义：Mock 子 agent(Interviewer/Judge/Strategist/Coach) 与 Diagnosi
 
 from __future__ import annotations
 
-from ...contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult
+from ...contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult, ResumeDiagnosis
 from ...contracts.agents.mock import (
     CoachInput,
     CoachReport,
@@ -273,6 +273,25 @@ PLANNING_SKILL = SkillSpec(
         "emit_path_diff_with_rationale",
         "publish_polished_report",
     ],
+    progressive_sections={
+        "sop": (
+            "排程 SOP（逐条执行，勿跳步）：\n"
+            "1. 只用候选列表里的真实 atom_id；按 priority = weakness*goal_relevance*recency / max(mastery,0.2) 排序。\n"
+            "2. 分桶到 deadline：阻塞性基础在前，高频面试点居中，难点单独占一天并标注。\n"
+            "3. 每天容量克制（1-2 个知识点），保证当天能产出一段可面试表达，而非被动看完。\n"
+            "4. 每隔 1-2 个学习日插入一次 mock/QA 复盘节点，低分点回写 weak memory。\n"
+            "5. rationale 必须写成学习教练能用的设计说明（不是『已生成计划』）：\n"
+            "   - 为何这样排序（点名是哪个弱点/目标驱动）；\n"
+            "   - 每天的训练目标 + 练习方式 + 验收标准；\n"
+            "   - 何时用 mock/QA 验证。\n\n"
+            "few-shot（学 rationale 的颗粒度，按真实候选填）：\n"
+            "  目标：两周内补齐后端面试；诊断弱点：缓存(0.3)、并发(0.4)\n"
+            "  ✗ 烂 rationale：『按掌握度从低到高安排了 6 天复习。』\n"
+            "  ✓ 好 rationale：『缓存掌握度最低且是后端高频考点，放 Day1-2 先打通击穿/雪崩/一致性；"
+            "并发紧随其后(Day3-4)，每天产出一段 60s 口述 + 一个机制图；Day3 做一场 3-5 轮 mock 检验"
+            "缓存能否抗追问，低分点回写 weak memory 进下轮诊断。』"
+        )
+    },
     constraints=[
         "Never commit the path directly.",
         "Only emit incremental PathDiff, not full replacement.",
@@ -424,6 +443,25 @@ INTERVIEWER_SKILL = SkillSpec(
     subskill_descriptions={},
     bash=NO_BASH,
     workflow=["read_history", "retrieve_material", "draft_question", "extract_expected_points"],
+    progressive_sections={
+        "sop": (
+            "出题 SOP（逐条执行，勿跳步）：\n"
+            "1. 读 last_answer 与候选人 claim：锁定一个**具体的、可追问真实性**的点，而非泛主题。\n"
+            "2. 按 pick_grill_round 的轮次意图出题：真实边界 → 技术细节 → JD 对齐 → 情景题。\n"
+            "3. 题目必须满足质量门槛（任一不满足就重写）：\n"
+            "   - 锚定到候选人说过的某句话/某个数字/某段经历，而不是『请介绍 X』；\n"
+            "   - 单一焦点，能在 2-3 分钟答完，不一题塞多问；\n"
+            "   - 逼出证据或边界（『怎么证明』『QPS 多少』『失败时如何处理』）。\n"
+            "4. expected_points 写 2-4 条**评分锚点**（答到什么算合格），不是答案本身。\n"
+            "5. 不重复 asked 里的题；不超出指定难度。\n\n"
+            "few-shot（学这个对照，不要照抄题面）：\n"
+            "  候选人 claim：『我用 Redis 做了缓存，QPS 提升很多』\n"
+            "  ✗ 烂题：『请介绍一下 Redis 缓存。』（泛泛、没锚定、考不出真实性）\n"
+            "  ✓ 好题：『你说 QPS 提升很多——提升前后具体多少？用什么压测的？缓存击穿/雪崩当时怎么防的，"
+            "有没有 bad case？』\n"
+            "    expected_points: [给出量化前后对比, 说明压测方法, 缓存击穿/雪崩的具体防护]"
+        )
+    },
     constraints=["Do not score.", "Do not reveal expected_points to the user as an answer key."],
     input_schema=InterviewerInput,
     output_schema=InterviewerOutput,
@@ -496,6 +534,25 @@ COACH_SKILL = SkillSpec(
     subskill_descriptions={},
     bash=NO_BASH,
     workflow=["aggregate_scores", "extract_evidence_backed_weaknesses", "draft_next_steps"],
+    progressive_sections={
+        "sop": (
+            "复盘 SOP（逐条执行）：\n"
+            "1. 通读逐轮 overall/missed_points/risk_flags，找重复出现的失分模式（跨轮的才是真弱点）。\n"
+            "2. summary：2-3 句，点出整体水平 + 最致命的 1 个问题，不写客套话。\n"
+            "3. 每条 weakness 必带 evidence=『第N轮…』，引具体那一轮的失分；泛泛建议一律删。\n"
+            "4. 对 risk_flags 非空或 overall≤2 的轮，产出 answer_card；最多 3 张，挑最该改的。\n"
+            "5. next_steps：可执行、可验证（『复盘 X 的 bad case 并能说出取舍』），不写『多练习』。\n\n"
+            "answer_card 质量门槛 + few-shot（学结构，按真实轮次填）：\n"
+            "  question：『你说服务做了高可用，怎么做的？』  user_answer：『加了多个实例就高可用了。』\n"
+            "  ✓ 卡片：\n"
+            "    why_risky: 只说『加实例』，答不出故障转移/数据一致/探活，一追就穿。\n"
+            "    dangerous: 『部署多个实例就高可用了』——会被追问『主挂了怎么切、切换期间请求怎么办』。\n"
+            "    passable: 承认只做了无状态多副本 + LB，故障转移依赖云厂商，没自己实现选主。\n"
+            "    strong: 讲清健康探活→摘流→故障转移的链路，给一个真实演练/故障案例与当时的取舍。\n"
+            "    evidence_needed: 一次真实故障/演练记录、切换耗时指标、可用性 SLO 数字。\n"
+            "  原则：不奖励夸大，passable 只讲真实做过的，strong 指明该补什么证据。"
+        )
+    },
     constraints=["Each weakness needs evidence.", "If fewer than two scored turns, state sample is insufficient."],
     input_schema=CoachInput,
     output_schema=CoachReport,
@@ -557,7 +614,8 @@ DIAGNOSIS_SKILL = SkillSpec(
     },
     max_react_steps=5,
     progressive_sections={
-        "react_sop": (
+        # 键名用 "sop" 以便被 load_instructions 默认加载链激活（原 "react_sop" 从未被加载）。
+        "sop": (
             "Diagnosis ReAct SOP:\n"
             "1. Call diagnosis.search_events first; do not infer from memory alone.\n"
             "2. Call diagnosis.get_mastery_snapshot only for atom_refs observed in evidence.\n"
@@ -570,6 +628,119 @@ DIAGNOSIS_SKILL = SkillSpec(
     input_schema=DiagnosisInput,
     output_schema=DiagnosisResult,
     steps=["load_events", "join_mastery", "cluster_rank", "recommend"],
+)
+
+
+# --- Resume Diagnosis（简历问题诊断，蒸馏自 llm-intern-skill；只读产出，存记忆可召回）---
+RESUME_DIAGNOSIS_SKILL = SkillSpec(
+    name="diagnosis.resume.v1",
+    agent_id=AgentId.DIAGNOSIS,
+    model_tier=ModelTier.SONNET,
+    frontmatter=_front("diagnosis.resume.v1", "resume_diagnosis_subagent",
+                       "Diagnose resume problems without writing learner state."),
+    system_prompt=(
+        "你是资深技术面试官 + 项目级简历拷打器（接入 llm-intern-skill 的 truth-boundary/evidence-contract）。"
+        "不是逐句挑刺的审稿器——先读项目材料、挖工程亮点，再谈证据缺口。不润色、不编造、不改学习状态。\n"
+        "Pipeline：claim 抽取与分类 → 用已给的项目材料证据为每条 claim 建证据包 → 项目级诊断 → "
+        "改写 + 面试深挖问题。\n"
+        "claim 分类(claim_type)：架构设计/具体实现/指标效果/个人贡献/技术栈背景。"
+        "**技术栈背景（语言/框架/中间件枚举）不单独当风险点**，否则会刷一堆无意义的 evidence_gap。\n"
+        "Evidence-Contract 分级：C0 了解/参与→笔记；C1 负责模块→代码/README/日志；C2 设计/优化→实验/对比/"
+        "bad case/设计文档；C3 结果影响(提升X%/高并发/SOTA)→必须指标定义+baseline+记录，否则降级或标补证据。\n"
+        "**先读已提供的项目材料证据**（github README/CLAUDE.md/源码、上传材料）：claim 在材料里有支撑就给"
+        "evidence_found+来源定位；缺证据只有在能指明『去哪个文件/测试/trace/日志找、"
+        "能支撑什么表达』时才说补证据；否则优先输出 technical_highlight（项目特异的工程亮点）。\n"
+        "support_strength 按**证据来源**判，不用 strong/weak：none / doc_supported(README/CLAUDE.md) / "
+        "code_supported(源码) / test_supported(测试) / runtime_supported(trace/benchmark/demo)。"
+        "**只读到 README/CLAUDE.md 时最多 doc_supported**，别判成 code/test/runtime。\n"
+        "证据要求按 claim_type 区分：**architecture/implementation/contribution → 需要代码/测试/trace/设计文档**"
+        "（不要强求性能指标）；**metric → 才需要 QPS/延迟/准确率等量化口径**。"
+        "**禁止在 stronger_after_evidence 里编造没有依据的『提升 X%』**——架构类只说补代码/测试/trace/设计文档。\n"
+        "Truth-Boundary 降级表：主导系统建设→参与某子模块；上线生产→完成 demo/内部验证；提升30%→样例对比"
+        "观察到改善；训练大模型→复现小模型/LoRA。\n"
+        "改写 rewritten_bullets 必须**信息密度高于原句、可直接替换进简历**：保留原 claim 关键实体"
+        "（Manager / QA·Diagnosis·Planning·Mock / ReAct / Skill / allowed tools / memory / handoff summary / "
+        "fallback 等），不许信息缩水或删成空泛短句，只收紧夸大；**每条核心 claim 都要有对应改写**（诊断 N 条→≥N 条）。\n"
+        "**输出语言跟随简历**：中文简历 → 全部面向用户字段用中文（术语/文件路径/类名/函数名可留英文），"
+        "**不要因为 README/CLAUDE.md 是英文就切英文**。\n"
+        "**架构表述要准**：Manager 调度子 Agent、子 Agent 内部 ReAct 调工具就这样写；"
+        "别写成 Manager 自己 ReAct 调所有工具（除非有代码证据）。\n"
+        "stronger_after_evidence 要给『补源码/测试/trace 后可以这样写进简历』的增强版 bullet，不是只说『补 manager.py 文档』。\n"
+        "若未提供目标 JD，**默认按简历『求职意向』(如 后端开发+agent) 评估，jd_fit 不要输出 unknown**。\n"
+        "只针对项目/实习经历，个人信息/学历/联系方式不算问题。"
+        "输出 ResumeDiagnosis：overall_verdict + top_highlights + most_dangerous + 逐条 packets(EvidencePacket) "
+        "+ rewritten_bullets + jd_fit + summary。"
+    ),
+    allowed_tools=["llm.complete_structured", "retrieval.search",
+                   "mcp.github.repo_summary", "mcp.github.read_file", "mcp.web.fetch_url"],
+    tool_descriptions={
+        "llm.complete_structured": "Structured project-level resume diagnosis.",
+        "retrieval.search": "Read the uploaded resume/JD/project material.",
+        "mcp.github.repo_summary": "Read a resume project's GitHub repo (README/languages).",
+        "mcp.github.read_file": "Read a key project file (CLAUDE.md/README) for architecture evidence.",
+        "mcp.web.fetch_url": "Fetch an external project doc/demo referenced in the resume.",
+    },
+    subskill_descriptions={},
+    bash=NO_BASH,
+    workflow=["extract_claims", "mine_project_evidence", "build_evidence_packets",
+              "project_aware_diagnosis", "rewrite_and_deep_dive"],
+    progressive_sections={
+        "sop": (
+            "项目级简历诊断 SOP：\n"
+            "1. claim 抽取：拆成逐条 bullet 并分 claim_type。跳过个人信息/学历/GPA/日期/联系方式/栏目。"
+            "技术栈背景标 tech_stack，不当风险点。\n"
+            "2. **子断言拆分**：每条 claim 拆 2-4 个 subclaims（如『Manager 唯一写者』『Manager 调度 "
+            "QA/Diagnosis/Planning/Mock』『子 Agent 经受控 ReAct 调工具』『replan≤2』），**逐子断言**在证据里找支撑。\n"
+            "3. 子断言级证据：每个 subclaim 单独填 evidence_found/evidence_sources/support_strength。"
+            "**code/test_supported 必须是对应的具体源码/测试文件确实被读到**（如 Manager 唯一写者→读到 "
+            "orchestration/manager.py），否则只 README/CLAUDE.md 提到→至多 doc_supported；"
+            "**泛化词(agent/learn/act/graph/judge/项目名)只是弱信号，不能当证据**。"
+            "**packet.support_strength 取各 subclaim 最弱项**——别因某子点有代码就整条 code_supported。"
+            "missing_evidence 写『缺什么 + 去哪找』（架构/实现缺源码/测试/trace，不是性能指标；metric 才缺 QPS/延迟）。\n"
+            "4. 深挖问题：interview_questions 不要问『它怎么工作』，要攻具体设计——"
+            "Manager 为什么唯一写者？agent-as-tool 与多 agent 对话有何区别？replan 如何触发与限制(≤2)？"
+            "Diagnosis 为什么只读？mastery/recency/error_freq 怎么算？Skill 的 allowed tools 怎么校验？"
+            "fallback 如何保证链路可用？Mock interrupt/resume 怎么恢复状态？（按本条 claim 挑相关的问）\n"
+            "5. 改写：safe_now（现有证据能安全怎么写）；stronger_after_evidence **只说要补的证据类型**"
+            "（架构类→补源码/测试/trace/设计文档；指标类→补量化口径），**禁止编造『提升 X%』**；"
+            "顶层 rewritten_bullets 给可直接粘贴的改写——**信息密度高于原句、保留全部关键技术词**"
+            "(Manager/QA/Diagnosis/Planning/Mock/ReAct/唯一写入等)，只收紧夸大，不许删成空泛短句。\n"
+            "6. 顶层：overall_verdict、top_highlights（项目最能打的亮点）、most_dangerous（最易被问穿的表述）、"
+            "jd_fit（无 JD 时按简历求职意向评估，不要 unknown）。\n\n"
+            "若项目是 LearnForge / Agent 系统，主动核对并挖这些设计点（材料里有就当亮点+给深挖问题）：\n"
+            "- Manager 是否唯一调度者 + 唯一写者（mastery/learning_paths 只它写）；\n"
+            "- QA/Diagnosis/Planning/Mock 是否 agent-as-tool；ReAct 工具调用如何受控（权限门/最大步数）；\n"
+            "- Skill 如何绑定 system_prompt + 输出 schema + workflow + 工具权限；\n"
+            "- memory 分层（稳定 MEMORY.md / 会话摘要 / handoff summary）；\n"
+            "- Diagnosis 如何读事件+掌握度+mock 记录聚合弱点；Planning 如何据诊断产 PathDiff；\n"
+            "- Mock 是否支持 interrupt/resume/side question/escalate；\n"
+            "- Retrieval 是否 hybrid(FTS+向量 RRF)+fallback；LLM/检索/工具失败如何优雅降级。\n\n"
+            "few-shot（项目级，学颗粒度）：\n"
+            "  bullet：『动态主 Agent 编排：以 Manager 为核心的分层 Agent 架构，按意图动态选下一步』\n"
+            "  ✓ packet: claim_type=architecture, **support_strength=doc_supported**(仅 README/CLAUDE.md 描述了"
+            "唯一写者，没读到源码/测试),\n"
+            "    technical_highlight='Manager 唯一写者 + agent-as-tool + replan≤2 的受控编排',\n"
+            "    interview_questions=['Manager 为什么是唯一写者，并发下避免了什么？','agent-as-tool 与让多个 agent"
+            "互相对话有何区别？','replan 由什么触发、为什么限 ≤2？','子 agent 失败/死循环如何 fallback 保证链路？'],\n"
+            "    missing_evidence=['CLAUDE.md 说了设计，但没读到 manager.py 源码与对应测试 → 指到 orchestration/"
+            "manager.py + tests/ 即可升到 code/test_supported'],\n"
+            "    safe_now='设计以 Manager 为唯一写者的分层 agent-as-tool 编排（plan-execute，replan≤2，子 agent 走"
+            "受控 ReAct）',\n"
+            "    **stronger_after_evidence='补 manager.py/编排测试与一条 trace 后，可写明唯一写者并发安全与重规划"
+            "上限的工程依据（不编造提升百分比）'**\n"
+            "  ✓ rewritten_bullet（密度↑、关键词全保留、可直接贴）：『设计 Manager 唯一写者的分层 agent-as-tool 编排"
+            "（plan→execute→aggregate，replan≤2），统辖 QA/Diagnosis/Planning/Mock，子 agent 经受控 ReAct 调用工具，"
+            "失败有确定性 fallback 保证链路可用』"
+        )
+    },
+    constraints=[
+        "Strictly read-only on learner state (mastery/paths/events).",
+        "Diagnose, do not rewrite the resume or invent experience.",
+        "Every issue excerpt must quote the resume; strong claims need evidence.",
+    ],
+    input_schema=None,
+    output_schema=ResumeDiagnosis,
+    steps=["split_claims", "flag_risks", "categorize", "score"],
 )
 
 
@@ -587,6 +758,7 @@ _ALL = [
     STRATEGIST_SKILL,
     COACH_SKILL,
     DIAGNOSIS_SKILL,
+    RESUME_DIAGNOSIS_SKILL,
 ]
 
 

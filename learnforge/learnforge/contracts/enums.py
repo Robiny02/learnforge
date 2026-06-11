@@ -176,3 +176,84 @@ class ModelTier(str, Enum):
 
     HAIKU = "haiku"
     SONNET = "sonnet"
+
+
+class ResumeIssueCategory(str, Enum):
+    """简历问题分类（蒸馏自 llm-intern-skill 的 resume review）。
+
+    - UNSUPPORTED_CLAIM：声称做过但无证据支撑的论断。
+    - WEAK_PHRASING：技术表达含糊/不精确，撑不住追问。
+    - RISKY_LANGUAGE：夸大/结果性措辞（主导/上线/显著提升），易被问穿。
+    - EVIDENCE_GAP：缺少能力佐证（指标/数据/对比/产物）。
+    - INTERVIEW_VULNERABILITY：最容易在面试中被攻破的薄弱点。
+    """
+
+    UNSUPPORTED_CLAIM = "unsupported_claim"
+    WEAK_PHRASING = "weak_phrasing"
+    RISKY_LANGUAGE = "risky_language"
+    EVIDENCE_GAP = "evidence_gap"
+    INTERVIEW_VULNERABILITY = "interview_vulnerability"
+
+
+class IssueSeverity(str, Enum):
+    """简历问题严重度。"""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class JDFitVerdict(str, Enum):
+    """简历与目标岗位的匹配判定（llm-intern-skill: JD Fit Verdict）。"""
+
+    RISKY = "risky"
+    MEDIUM = "medium"
+    STRONG = "strong"
+    UNKNOWN = "unknown"
+
+
+class ExternalSourceKind(str, Enum):
+    """简历/输入里外部链接的类型（决定怎么挖证据）。"""
+
+    GITHUB_REPO = "github_repo"      # owner/repo 根：读 summary/README/CLAUDE.md + 按 claim 找源码/测试
+    GITHUB_FILE = "github_file"      # /blob/.../file：直接读该文件
+    GITHUB_DIR = "github_dir"        # /tree/.../dir：列目录按 claim 选文件
+    TECH_BLOG = "tech_blog"          # 技术博客：fetch 正文（只算"项目说明"，非源码级证据）
+    DOCS_PAGE = "docs_page"          # 文档站（gitbook/notion/readthedocs）：fetch 作文档证据
+    UNKNOWN_URL = "unknown_url"      # 其它：尝试 fetch，失败记录原因
+
+
+class ClaimType(str, Enum):
+    """简历 claim 的类型（项目级诊断先分类再拷打）。
+
+    - ARCHITECTURE：架构/系统设计 claim（如"分层 Agent 架构""唯一写者"）。
+    - IMPLEMENTATION：具体实现 claim（用了什么算法/机制/数据结构）。
+    - METRIC：指标/效果 claim（提升 X%/QPS/准确率）。
+    - CONTRIBUTION：个人贡献/角色 claim（我负责/主导哪部分）。
+    - TECH_STACK：技术栈背景（用到的语言/框架/中间件枚举）——**不单独当风险点**。
+    """
+
+    ARCHITECTURE = "architecture"
+    IMPLEMENTATION = "implementation"
+    METRIC = "metric"
+    CONTRIBUTION = "contribution"
+    TECH_STACK = "tech_stack"
+
+
+class EvidenceStrength(str, Enum):
+    """claim 的证据支持**来源**（按可验证强度区分，不用笼统的 strong/weak）。
+
+    - NONE：无任何材料支撑。
+    - DOC_SUPPORTED：仅 README/CLAUDE.md/设计文档等**文档**支持（最弱，文档说有≠真做到）。
+    - CODE_SUPPORTED：有**源码**支持（能指到具体文件/函数）。
+    - TEST_SUPPORTED：有**测试**支持（测试覆盖该行为）。
+    - RUNTIME_SUPPORTED：有 **trace/benchmark/demo** 等运行期证据（最强）。
+
+    只读到 README/CLAUDE.md 时最多判 DOC_SUPPORTED，不要轻易判为 code/test/runtime。
+    """
+
+    NONE = "none"
+    DOC_SUPPORTED = "doc_supported"
+    CODE_SUPPORTED = "code_supported"
+    TEST_SUPPORTED = "test_supported"
+    RUNTIME_SUPPORTED = "runtime_supported"

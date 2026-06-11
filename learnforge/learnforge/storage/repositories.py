@@ -843,7 +843,14 @@ class DialogueTurnRepository(_Base):
 
         recent = proj[-recent_k:]
         older = rows[:-recent_k] if len(rows) > recent_k else []
+        recent_seqs = {r["seq"] for r in rows[-recent_k:]}
         anchors = self._select_anchors(older, last_capability)
+        # #1 留头：把首个实质 user 轮（原始诉求）钉成**永不过期** origin 锚点——它按 min(seq) 实时查，
+        #     不随窗口滑动丢失（CC「keep head」的等价物）。已在近窗/其它锚点里则不重复。
+        taken = recent_seqs | {a["seq"] for a in anchors}
+        origin = self._origin_anchor(session_id, taken)
+        if origin:
+            anchors = [origin] + anchors  # 放最前（chrono 最早）
         summary = self._session_summary(session_id) or _digest_rows(older)
 
         ctx: dict = {"history": recent, "anchors": anchors,
@@ -897,6 +904,18 @@ class DialogueTurnRepository(_Base):
             if any(a.get("kind") in ("mock_active", "path") for a in arts):
                 add(r, "artifact")
                 break
+        for r in reversed(older_rows):         # #4：最近一条带上传附件(document/image)——跨轮可引用
+            if r["seq"] in seen:
+                continue
+            arts = json.loads(r["artifacts"] or "[]")
+            files = [a for a in arts if a.get("kind") in ("document", "image")]
+            if files:
+                fn = "、".join((a.get("filename") or a.get("ref") or "") for a in files[:2])
+                proj = self._project_row(r)
+                proj["text"] = (f"【已上传附件：{fn}】{proj['text']}")[:80]
+                anchors.append({**proj, "kind": "attachment", "seq": r["seq"]})
+                seen.add(r["seq"])
+                break
         for r in reversed(older_rows):         # 最近一条待澄清
             if r["seq"] in seen:
                 continue
@@ -904,7 +923,25 @@ class DialogueTurnRepository(_Base):
                 add(r, "clarify")
                 break
         anchors.sort(key=lambda a: a["seq"])
-        return anchors[:3]
+        return anchors[:4]  # thread_start / attachment / artifact / clarify（origin 由 derive_context 另加）
+
+    def _origin_anchor(self, session_id: str, taken_seqs: set) -> Optional[dict]:
+        """#1：首个实质（非空）user 轮 = 会话原始诉求，钉成永不过期的 origin 锚点。
+
+        按 min(seq) 实时查（不受 scan 窗口限制）；已在近窗/其它锚点里 → None（不重复）。
+        """
+        try:
+            r = self.conn.execute(
+                "SELECT seq, text, capability, topic, tool_calls, artifacts, status "
+                "FROM dialogue_turns WHERE session_id = ? AND role = 'user' "
+                "AND TRIM(COALESCE(text,'')) <> '' ORDER BY seq ASC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not r or r["seq"] in taken_seqs:
+            return None
+        return {**self._project_row(r), "kind": "origin", "seq": r["seq"]}
 
     def _session_summary(self, session_id: str) -> str:
         """已有会话摘要(session_state.summary，LLM 折叠)；无则空。best-effort。"""

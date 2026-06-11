@@ -32,3 +32,8 @@ target/
 learnforge/docs/reports/
 chunking_benchmark_v2/benchmark/reports/chunks/
 chunking_benchmark_v2/benchmark/reports/.cache/
+
+# Personal docs / local logs / runtime locks (do not commit)
+resume_*.pdf
+learnforge/learnforge/logs/
+.claude/*.lock

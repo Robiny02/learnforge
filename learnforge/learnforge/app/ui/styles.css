@@ -726,6 +726,18 @@ h1 {
   background: #fff2bf;
 }
 
+.message.diagnosis-message {
+  align-items: flex-start;
+}
+
+.message.diagnosis-message .message-bubble {
+  width: min(980px, calc(100% - 70px));
+  max-width: min(980px, calc(100% - 70px));
+  padding: 0;
+  overflow: hidden;
+  background: #fffaf0;
+}
+
 .message.agent .message-bubble::after {
   left: -8px;
 }
@@ -783,6 +795,365 @@ h1 {
   background: rgba(255, 255, 255, 0.52);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92em;
+}
+
+.resume-report {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  color: #2f271f;
+  background:
+    linear-gradient(180deg, rgba(255, 251, 240, 0.98), rgba(255, 245, 222, 0.96));
+}
+
+.resume-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  padding: 18px;
+  background: #fffdf7;
+  border: 2px solid rgba(92, 53, 31, 0.18);
+  box-shadow: inset 0 -3px rgba(92, 53, 31, 0.04);
+}
+
+.resume-kicker {
+  margin-bottom: 5px;
+  color: #6d7f2d;
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.resume-hero h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 1.15;
+  color: #261d16;
+}
+
+.resume-hero p {
+  max-width: 64ch;
+  margin: 0;
+  color: #5f4c39;
+  line-height: 1.65;
+}
+
+.resume-fit {
+  min-width: 112px;
+  padding: 10px 12px;
+  text-align: center;
+  background: #edf7df;
+  border: 2px solid #8caf4f;
+  box-shadow: inset 0 -4px rgba(95, 163, 93, 0.18);
+}
+
+.resume-fit span,
+.resume-section-title span,
+.resume-source-label {
+  display: block;
+  color: #76624b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.resume-fit strong {
+  display: block;
+  margin-top: 2px;
+  color: #315522;
+  font-size: 18px;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.resume-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.resume-summary-card,
+.resume-section,
+.resume-sources,
+.resume-packet {
+  background: #fffdf7;
+  border: 2px solid rgba(92, 53, 31, 0.18);
+}
+
+.resume-summary-card {
+  padding: 14px;
+}
+
+.resume-summary-card h3,
+.resume-section-title h3 {
+  margin: 0;
+  color: #261d16;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.resume-summary-card ul,
+.resume-source ul,
+.resume-rewrite-list,
+.resume-subclaims {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.resume-summary-card li,
+.resume-source li,
+.resume-rewrite-list li,
+.resume-subclaims li {
+  line-height: 1.55;
+}
+
+.resume-summary-card li + li,
+.resume-source li + li,
+.resume-rewrite-list li + li,
+.resume-subclaims li + li {
+  margin-top: 6px;
+}
+
+.resume-summary-card.strength {
+  border-left: 5px solid #5fa35d;
+}
+
+.resume-summary-card.danger {
+  border-left: 5px solid #d85f65;
+}
+
+.resume-sources {
+  padding: 0;
+}
+
+.resume-sources summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 10px 14px;
+  color: #261d16;
+  font-size: 14px;
+  font-weight: 950;
+  cursor: pointer;
+  background: #fff6d8;
+  border-bottom: 2px solid rgba(92, 53, 31, 0.16);
+}
+
+.resume-sources summary span {
+  color: #76624b;
+  font-size: 11px;
+}
+
+.resume-source-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.resume-source {
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(92, 53, 31, 0.16);
+}
+
+.resume-source strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #34271e;
+  overflow-wrap: anywhere;
+}
+
+.resume-source-group {
+  margin-top: 8px;
+  padding: 9px 10px;
+  background: #fbf8ed;
+  border-left: 4px solid #9b835f;
+}
+
+.resume-source-group.supported {
+  border-left-color: #5fa35d;
+}
+
+.resume-source-group.no-match {
+  border-left-color: #d8a444;
+}
+
+.resume-source-group.suggested {
+  border-left-color: #659fc0;
+}
+
+.resume-section {
+  padding: 14px;
+}
+
+.resume-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.resume-packet-list {
+  display: grid;
+  gap: 12px;
+}
+
+.resume-packet {
+  padding: 14px;
+}
+
+.resume-packet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.resume-index,
+.resume-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin-right: 6px;
+  padding: 2px 8px;
+  color: #315522;
+  background: #edf7df;
+  border: 1px solid rgba(49, 85, 34, 0.28);
+  font-size: 11px;
+  font-weight: 950;
+  vertical-align: middle;
+}
+
+.resume-index {
+  justify-content: center;
+  min-width: 26px;
+  color: #fff9db;
+  background: #6f7f35;
+  border-color: #315522;
+}
+
+.resume-pill.muted {
+  color: #5b4b3b;
+  background: #f6efd9;
+  border-color: rgba(92, 53, 31, 0.18);
+}
+
+.resume-claim {
+  margin: 10px 0 0;
+  color: #261d16;
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.55;
+}
+
+.resume-highlight {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  color: #315522;
+  background: #f0f8e7;
+  border-left: 4px solid #5fa35d;
+  line-height: 1.55;
+}
+
+.resume-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.resume-detail {
+  min-width: 0;
+  padding: 10px;
+  background: #fbf8ed;
+  border: 1px solid rgba(92, 53, 31, 0.16);
+  border-left: 4px solid #9b835f;
+}
+
+.resume-detail.safe {
+  border-left-color: #5fa35d;
+}
+
+.resume-detail.stronger {
+  border-left-color: #659fc0;
+}
+
+.resume-detail.risk {
+  border-left-color: #d85f65;
+}
+
+.resume-detail.question {
+  border-left-color: #d8a444;
+}
+
+.resume-detail span {
+  display: block;
+  margin-bottom: 4px;
+  color: #76624b;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.resume-detail p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.resume-evidence {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #fffaf0;
+  border: 1px solid rgba(92, 53, 31, 0.16);
+}
+
+.resume-evidence summary {
+  color: #5c351f;
+  font-size: 12px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.resume-rewrite {
+  border-left: 5px solid #245f82;
+}
+
+.resume-rewrite-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.resume-rewrite-list li {
+  padding: 10px 11px;
+  background: #eef8ff;
+  border: 1px solid rgba(36, 95, 130, 0.22);
+  border-left: 4px solid #245f82;
+}
+
+.resume-report code {
+  padding: 1px 5px;
+  border: 1px solid rgba(92, 53, 31, 0.24);
+  background: rgba(255, 255, 255, 0.68);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+@media (max-width: 1180px) {
+  .resume-summary-grid,
+  .resume-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resume-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .resume-fit {
+    width: fit-content;
+    text-align: left;
+  }
 }
 
 .pixel-avatar {

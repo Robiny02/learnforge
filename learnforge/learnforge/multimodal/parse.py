@@ -104,31 +104,132 @@ def _to_data_url(data: str, mime: str) -> str:
 
 
 # ----------------------------------------------------------------- PDF
+# vision OCR 上限：只识别前 N 页，控制成本/延迟（简历通常 1-2 页）。
+_OCR_MAX_PAGES = 4
+_OCR_DPI = 150
+# OCR 用**快**的 vision 模型（gpt-4o，OCR 又快又准），别用慢推理模型（如 claude-sonnet）跑 OCR。
+_OCR_MODEL = __import__("os").environ.get("LF_OCR_MODEL", "openai/gpt-4o")
+_OCR_TIMEOUT_S = 90.0
+
+
 def _parse_pdf(att: Attachment, raw: bytes) -> None:
+    """三级提取：① pymupdf/pypdf 直接抽文本 → ② 乱码/空则渲染页图走 vision OCR → ③ 仍不行诚实降级。
+
+    Overleaf/LaTeX 的中文 PDF 常用子集字体且缺 ToUnicode，直接抽文本会乱码；此时退到 vision OCR
+    （读渲染像素，不受字体编码影响），需 pymupdf 渲染 + LLM 可用。
+    """
     if not raw:
         att.degraded, att.note = True, "PDF 数据为空"
         return
-    try:
-        from pypdf import PdfReader
-    except Exception:  # noqa: BLE001 - 缺依赖优雅降级
-        att.degraded = True
-        att.note = "未安装 pypdf，无法抽取 PDF 文本(可 pip install learnforge[multimodal])"
+    # ① 直接抽文本（pymupdf 对 LaTeX 比 pypdf 强；缺 pymupdf 回退 pypdf）。
+    text, pages = _extract_pdf_text(raw)
+    att.page_count = pages
+    if text and not _looks_garbled(text):
+        att.extracted_text, att.truncated = _budget(text)
+        if not att.extracted_text:
+            att.degraded, att.note = True, "PDF 抽取为空(可能是扫描件)"
         return
+    # ② 文本乱码/空 → 渲染页图走 vision OCR。
+    ocr = _ocr_pdf_via_vision(raw, att.filename)
+    if ocr and not _looks_garbled(ocr):
+        att.extracted_text, att.truncated = _budget(ocr)
+        att.note = "PDF 字体无法直接抽取，已用 vision 识别页面文本。"
+        return
+    # ③ 仍不行 → 诚实降级。
+    att.degraded = True
+    att.note = ("PDF 文本提取失败(字体子集/扫描件)。"
+                "请改用 .md/.txt 或导出文本版简历，或直接粘贴正文。")
+
+
+def _extract_pdf_text(raw: bytes) -> tuple:
+    """返回 (text, page_count)。优先 pymupdf；不可用则 pypdf；都不可用返回 ("", 0)。"""
     import io
 
-    reader = PdfReader(io.BytesIO(raw))
-    att.page_count = len(reader.pages)
-    parts: List[str] = []
-    for page in reader.pages:
-        try:
-            parts.append(page.extract_text() or "")
-        except Exception:  # noqa: BLE001 - 单页失败跳过
+    try:  # pymupdf：对 Overleaf/LaTeX 字体处理更好
+        import fitz  # type: ignore
+
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            parts = [page.get_text() or "" for page in doc]
+            return "\n".join(p for p in parts if p.strip()), doc.page_count
+    except Exception:  # noqa: BLE001 - 缺 pymupdf 或解析失败 → 退 pypdf
+        pass
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:  # noqa: BLE001 - 单页失败跳过
+                continue
+        return "\n".join(p for p in parts if p.strip()), len(reader.pages)
+    except Exception:  # noqa: BLE001
+        return "", 0
+
+
+def _ocr_pdf_via_vision(raw: bytes, filename: str = "") -> str:
+    """把 PDF 前几页渲染成 PNG，交 vision 模型逐字识别文本。需 pymupdf + LLM 可用，否则返回 ""。"""
+    from ..llm.client import LLM
+
+    if not LLM.available:
+        return ""
+    try:
+        import base64 as _b64
+
+        import fitz  # type: ignore
+
+        data_urls: List[str] = []
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            for page in list(doc)[:_OCR_MAX_PAGES]:
+                pix = page.get_pixmap(dpi=_OCR_DPI)
+                png = pix.tobytes("png")
+                data_urls.append("data:image/png;base64," + _b64.b64encode(png).decode())
+        if not data_urls:
+            return ""
+        from ..contracts.enums import ModelTier
+
+        res = LLM.complete(
+            prompt=(
+                f"这是简历 PDF「{filename or ''}」逐页渲染的图片。请**逐字提取**其中的所有文本，"
+                "原样输出（保留每一行、每个条目、时间、项目名与换行），不要总结、不要翻译、不要加解释。"
+                "用纯文本/Markdown 输出，按阅读顺序排列。"
+            ),
+            model_tier=ModelTier.HAIKU,
+            model=_OCR_MODEL,          # 显式快 vision 模型（gpt-4o），避免慢推理模型拖垮 OCR
+            max_tokens=8000,           # 整页简历逐字输出，4000 会把后半截断（"只读了一半"）
+            timeout_s=_OCR_TIMEOUT_S,  # 默认 30s 对多图 OCR 偏短，给足
+            images=data_urls,
+        )
+        return (res.text or "").strip()
+    except Exception:  # noqa: BLE001 - OCR 失败不阻断，交上层诚实降级
+        return ""
+
+
+def _looks_garbled(text: str) -> bool:
+    """检测 PDF 抽取乱码：大量字符落在简历不会用到的'冷门文字系统'区段。
+
+    允许 ASCII/拉丁、常用中文(CJK 统一表意)、CJK/全角标点、常见符号；其余(格鲁吉亚/僧伽罗/
+    藏文/泰米尔/天城文…)占比过高即判乱码。正常中英文简历 bad 占比极低。
+    """
+    s = (text or "").strip()
+    if len(s) < 20:
+        return False
+    bad = total = 0
+    for ch in s:
+        if ch.isspace():
             continue
-    text = "\n".join(p for p in parts if p.strip())
-    att.extracted_text, att.truncated = _budget(text)
-    if not att.extracted_text:
-        att.degraded = True
-        att.note = "PDF 抽取为空(可能是扫描件，后续可渲染页图走 vision)"
+        total += 1
+        o = ord(ch)
+        if (o < 0x300                          # 基本拉丁 + 拉丁补充
+                or 0x4E00 <= o <= 0x9FFF       # CJK 统一表意（常用汉字）
+                or 0x3000 <= o <= 0x303F       # CJK 标点
+                or 0xFF00 <= o <= 0xFFEF       # 全角
+                or 0x2000 <= o <= 0x206F       # 常用标点
+                or 0x2100 <= o <= 0x21FF):     # 字母符号/箭头
+            continue
+        bad += 1
+    return total > 0 and (bad / total) > 0.25
 
 
 # ----------------------------------------------------------------- 预算

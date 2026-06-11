@@ -93,7 +93,8 @@ def test_diagnosis_skill_trigger_metadata_selects_progressively():
     assert by_intent[0].spec.name == "diagnosis.v1"
     assert by_event[0].spec.name == "diagnosis.v1"
     assert by_keyword[0].spec.name == "diagnosis.v1"
-    assert "Diagnosis ReAct SOP" in by_intent[0].load_instructions(["react_sop"])
+    # SOP 现在经 "sop" 段被默认加载链激活（原 "react_sop" 键从未被加载）。
+    assert "Diagnosis ReAct SOP" in by_intent[0].load_instructions()
 
 
 def test_diagnosis_react_uses_real_tool_calls(seeded_db):

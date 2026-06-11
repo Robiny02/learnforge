@@ -7,8 +7,10 @@
 冲突解决：越靠后优先级越高，但安全/格式规范不可被 User Input 覆盖；检索证据优先于模型先验。
 前 4 段对同一 agent 稳定，作为可缓存 prefix。
 
-这一层把 skill（system_prompt）、memory（作用域切片 + handoff_summary）、检索片段组装到一起，
-是"agent 工作流由 skill 控制"的拼装点。Phase 1：返回结构化分段，不真正调用 LLM。
+> 上下文体量控制**不在这一层**：采用 Claude Code 式**会话级 compaction**——每个 agent turn
+> 结束后由 `ManagerAgent.record_turn` 统计 session context tokens，超 `SESSION_COMPACTION_
+> THRESHOLD_TOKENS` 才把较旧轮折叠成摘要（pinned 重要结果永不折叠）。这里只负责按序拼装，
+> 不做单次 prompt 的 token 计数/裁剪。
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ def assemble_prompt(
     user_input: str = "",
     system_override: Optional[str] = None,
 ) -> AssembledPrompt:
-    """按 Design §6c 顺序拼装。Phase 1：纯字符串拼接，不做 token 计数与裁剪。"""
+    """按 Design §6c 顺序拼装。纯字符串拼接；体量由会话级 compaction 控制（见模块 docstring）。"""
     return AssembledPrompt(
         system=system_override or "You are a LearnForge agent. Follow safety and format rules.",
         skill=(skill.spec.system_prompt if skill else ""),

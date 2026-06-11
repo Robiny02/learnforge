@@ -344,7 +344,7 @@ function inlineMarkdown(value) {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
 
-function renderRichText(value) {
+function renderBasicRichText(value) {
   const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let listType = null;
@@ -394,6 +394,270 @@ function renderRichText(value) {
   });
   closeList();
   return `<div class="rich-text">${html.join("") || "<p></p>"}</div>`;
+}
+
+function isResumeDiagnosisMarkdown(value) {
+  return /^##\s+简历诊断/.test(String(value || "").trim());
+}
+
+function cleanResumeMarker(value) {
+  return String(value || "")
+    .replace(/^✅\s*/, "")
+    .replace(/^⚠️?\s*/, "")
+    .replace(/^🔎\s*/, "")
+    .replace(/^💡\s*/, "")
+    .replace(/^🔹\s*/, "")
+    .replace(/^🔍\s*/, "")
+    .replace(/^❓\s*/, "")
+    .replace(/^✍️?\s*/, "")
+    .replace(/^🚀\s*/, "")
+    .trim();
+}
+
+function stripListMarker(value) {
+  return cleanResumeMarker(String(value || "").trim().replace(/^[-*]\s+/, ""));
+}
+
+function splitResumeSections(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const firstHeading = lines.find((line) => /^##\s+/.test(line.trim())) || "## 简历诊断";
+  const sections = [];
+  let current = null;
+
+  lines.forEach((raw) => {
+    const line = raw.trimEnd();
+    const section = line.match(/^###\s+(.+)$/);
+    if (section) {
+      current = { title: cleanResumeMarker(section[1]), lines: [] };
+      sections.push(current);
+      return;
+    }
+    if (current) current.lines.push(line);
+  });
+
+  return {
+    heading: firstHeading.replace(/^##\s+/, "").trim(),
+    sections,
+  };
+}
+
+function findResumeSection(sections, name) {
+  return sections.find((section) => section.title.includes(name));
+}
+
+function sectionPlainText(section) {
+  if (!section) return "";
+  return section.lines.map((line) => line.trim()).filter(Boolean).join("\n");
+}
+
+function sectionBullets(section) {
+  if (!section) return [];
+  return section.lines
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+/.test(line))
+    .map(stripListMarker);
+}
+
+function renderResumePill(text, tone = "") {
+  return `<span class="resume-pill ${tone}">${escapeHtml(text)}</span>`;
+}
+
+function renderResumeList(items, className = "") {
+  if (!items.length) return "";
+  return `<ul class="${className}">${items.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</ul>`;
+}
+
+function parseResumeSources(section) {
+  if (!section) return [];
+  const sources = [];
+  let current = null;
+  let group = "";
+
+  section.lines.forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    const root = line.match(/^-\s+([^:：]+):\s+(.+)$/);
+    if (root && !/^-\s+[✅⚠🔎]/.test(line) && !line.includes("selected_and_supported") && !line.includes("read_success_but_no_match")) {
+      current = { title: `${root[1]}: ${root[2]}`, groups: [] };
+      sources.push(current);
+      group = "";
+      return;
+    }
+    if (!current) return;
+    const supported = line.match(/^-\s+✅\s*(.+)$/);
+    const noMatch = line.match(/^-\s+⚠️?\s*(.+)$/);
+    const suggested = line.match(/^-\s+🔎\s*(.+)$/);
+    if (supported || noMatch || suggested) {
+      group = supported ? "supported" : noMatch ? "no-match" : "suggested";
+      current.groups.push({ kind: group, title: cleanResumeMarker((supported || noMatch || suggested)[1]), items: [] });
+      return;
+    }
+    const child = line.match(/^-\s+(.+)$/);
+    if (child && current.groups.length) {
+      current.groups[current.groups.length - 1].items.push(cleanResumeMarker(child[1]));
+    }
+  });
+  return sources;
+}
+
+function renderResumeSources(section) {
+  const sources = parseResumeSources(section);
+  if (!sources.length) return "";
+  const groupLabels = { supported: "支持证据", "no-match": "已读未命中", suggested: "建议补读" };
+  return `
+    <details class="resume-sources">
+      <summary>已读取项目材料 <span>${sources.length} 个来源</span></summary>
+      <div class="resume-source-list">
+        ${sources.map((source) => `
+          <article class="resume-source">
+            <strong>${inlineMarkdown(source.title)}</strong>
+            ${source.groups.map((group) => `
+              <div class="resume-source-group ${group.kind}">
+                <div class="resume-source-label">${escapeHtml(groupLabels[group.kind] || group.title)}</div>
+                ${renderResumeList(group.items.length ? group.items : [group.title])}
+              </div>
+            `).join("")}
+          </article>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function parseResumePackets(section) {
+  if (!section) return [];
+  const packets = [];
+  let current = null;
+  const packetRe = /^\*\*(\d+)\.\s+\[([^\]]+)\](?:（([^）]+)）)?\*\*\s*(.+)$/;
+
+  section.lines.forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    const head = line.match(packetRe);
+    if (head) {
+      current = {
+        index: head[1],
+        kind: head[2],
+        summary: head[3] || "",
+        claim: head[4],
+        highlight: "",
+        subclaims: [],
+        evidence: "",
+        missing: "",
+        questions: "",
+        safe: "",
+        stronger: "",
+        other: [],
+      };
+      packets.push(current);
+      return;
+    }
+    if (!current) return;
+    const item = stripListMarker(line);
+    if (!item) return;
+    if (item.startsWith("亮点：")) current.highlight = item.replace(/^亮点：/, "");
+    else if (item.startsWith("子断言")) current.subclaims.push(item);
+    else if (item.startsWith("已有证据")) current.evidence = item;
+    else if (item.startsWith("缺证据/去哪找：")) current.missing = item.replace(/^缺证据\/去哪找：/, "");
+    else if (item.startsWith("面试官会追问：")) current.questions = item.replace(/^面试官会追问：/, "");
+    else if (item.startsWith("现在能安全写：")) current.safe = item.replace(/^现在能安全写：/, "");
+    else if (item.startsWith("补证据后更强：")) current.stronger = item.replace(/^补证据后更强：/, "");
+    else current.other.push(item);
+  });
+  return packets;
+}
+
+function renderPacketDetail(label, value, tone = "") {
+  if (!value) return "";
+  return `
+    <div class="resume-detail ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <p>${inlineMarkdown(value)}</p>
+    </div>
+  `;
+}
+
+function renderResumePackets(section) {
+  const packets = parseResumePackets(section);
+  if (!packets.length) return "";
+  return `
+    <section class="resume-section">
+      <div class="resume-section-title">
+        <h3>逐条项目级诊断</h3>
+        <span>${packets.length} 条 claim</span>
+      </div>
+      <div class="resume-packet-list">
+        ${packets.map((packet) => `
+          <article class="resume-packet">
+            <div class="resume-packet-head">
+              <div>
+                <span class="resume-index">${escapeHtml(packet.index)}</span>
+                ${renderResumePill(packet.kind)}
+                ${packet.summary ? renderResumePill(packet.summary, "muted") : ""}
+              </div>
+            </div>
+            <p class="resume-claim">${inlineMarkdown(packet.claim)}</p>
+            ${packet.highlight ? `<p class="resume-highlight">${inlineMarkdown(packet.highlight)}</p>` : ""}
+            <div class="resume-detail-grid">
+              ${renderPacketDetail("安全写法", packet.safe, "safe")}
+              ${renderPacketDetail("补证据后", packet.stronger, "stronger")}
+              ${renderPacketDetail("缺口", packet.missing, "risk")}
+              ${renderPacketDetail("追问", packet.questions, "question")}
+            </div>
+            ${packet.evidence ? `<details class="resume-evidence"><summary>证据与子断言</summary>${renderPacketDetail("已有证据", packet.evidence)}${renderResumeList(packet.subclaims, "resume-subclaims")}</details>` : ""}
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderResumeDiagnosis(value) {
+  const { heading, sections } = splitResumeSections(value);
+  const fit = (heading.match(/JD\s*匹配[：:]\s*([^)）]+)/) || [])[1] || "";
+  const verdict = sectionPlainText(findResumeSection(sections, "总体判断"));
+  const highlights = sectionBullets(findResumeSection(sections, "真正能打"));
+  const dangerous = sectionBullets(findResumeSection(sections, "最危险"));
+  const rewritten = sectionBullets(findResumeSection(sections, "可直接替换"));
+
+  return `
+    <div class="resume-report">
+      <div class="resume-hero">
+        <div>
+          <div class="resume-kicker">Resume Diagnosis</div>
+          <h2>简历诊断</h2>
+          ${verdict ? `<p>${inlineMarkdown(verdict)}</p>` : ""}
+        </div>
+        ${fit ? `<div class="resume-fit"><span>JD 匹配</span><strong>${escapeHtml(fit)}</strong></div>` : ""}
+      </div>
+      <div class="resume-summary-grid">
+        <section class="resume-summary-card strength">
+          <h3>真正能打</h3>
+          ${renderResumeList(highlights)}
+        </section>
+        <section class="resume-summary-card danger">
+          <h3>最危险</h3>
+          ${renderResumeList(dangerous)}
+        </section>
+      </div>
+      ${renderResumeSources(findResumeSection(sections, "已读取"))}
+      ${renderResumePackets(findResumeSection(sections, "逐条项目级诊断"))}
+      ${rewritten.length ? `
+        <section class="resume-section resume-rewrite">
+          <div class="resume-section-title">
+            <h3>可直接替换进简历</h3>
+            <span>${rewritten.length} 条</span>
+          </div>
+          ${renderResumeList(rewritten, "resume-rewrite-list")}
+        </section>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderRichText(value) {
+  if (isResumeDiagnosisMarkdown(value)) return renderResumeDiagnosis(value);
+  return renderBasicRichText(value);
 }
 
 function setView(name) {
@@ -516,7 +780,8 @@ if (mockToggle) {
 
 function addMessage(role, text, meta = "") {
   const article = document.createElement("article");
-  article.className = `message ${role}`;
+  const diagnosisClass = role === "agent" && isResumeDiagnosisMarkdown(text) ? " diagnosis-message" : "";
+  article.className = `message ${role}${diagnosisClass}`;
   const safeMeta = escapeHtml(meta || (role === "user" ? "You" : "LearnForge"));
   const avatarClass = role === "user" ? "avatar-user" : "avatar-agent";
   article.innerHTML = `
@@ -804,7 +1069,7 @@ async function sendPrompt(text, opts = {}) {
   logLine("Input", text);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000); // 120s 客户端超时，避免“永久卡住”
+  const timer = setTimeout(() => controller.abort(), 180000); // 180s 客户端超时（含简历 OCR+深度诊断等慢链路）
   try {
     const response = await fetch("/ui/chat", {
       method: "POST",
@@ -876,7 +1141,7 @@ async function sendPrompt(text, opts = {}) {
     chainStatus.textContent = data.status || "ok";
   } catch (err) {
     if (err.name === "AbortError") {
-      addMessage("agent", "请求超时（>120s）。复合链路或模型较慢，可重试或换更简单的问题。", "LearnForge · timeout");
+      addMessage("agent", "请求超时（>180s）。简历 OCR+深度诊断或复合链路较慢，可重试。", "LearnForge · timeout");
       logLine("Timeout", "120s");
       chainStatus.textContent = "timeout";
     } else {

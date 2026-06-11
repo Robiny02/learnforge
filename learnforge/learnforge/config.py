@@ -67,8 +67,30 @@ MEMORY_IMPORTANCE = {
     "note": 0.4,
 }
 MEMORY_IMPORTANCE_DEFAULT = 0.5
-# session_memory 保留的最近原文轮数；更旧的压成 summary。
-SESSION_RECENT_ROUNDS = 6
+# session_memory 压缩 = Claude Code 式会话级 compaction（按 token 阈值，不按轮数）：每个 agent
+# turn 结束统计 session context tokens（summary + 最近原文轮，不含 pinned），超 THRESHOLD 才把较
+# 旧轮折叠进 summary，压到 ≤TARGET，但至少保留 MIN_RECENT 轮。
+#
+# 阈值按**项目上下文 token 上限的占用率**派生（Claude Code 语义，不是拍脑袋的小绝对值）：
+#   - CONTEXT_LIMIT_TOKENS：项目上下文 token 上限。默认 = 所用模型窗口（两档默认 openai/
+#     gpt-4o-mini = 128K）；用 LF_CONTEXT_LIMIT_TOKENS 覆盖（换 claude-3.5-sonnet 设 200000，
+#     或想更省成本/更早压缩就调小）。
+#   - 占上限 80% 触发 compaction，压到 35%（落在 30–40% 区间中值）。
+# 默认 128K：THRESHOLD=102400、TARGET=44800，约 100 轮才触发、压到约 45 轮；日常对话几乎不触发，
+# compaction 只在接近上限时兜底，pinned + MIN_RECENT 兜住重要/最近内容。
+CONTEXT_LIMIT_TOKENS = int(os.getenv("LF_CONTEXT_LIMIT_TOKENS", "128000"))
+SESSION_COMPACTION_TRIGGER_RATIO = 0.80   # 占上限 80% → 触发
+SESSION_COMPACTION_TARGET_RATIO = 0.35    # 压到约 35%（30–40% 区间）
+SESSION_COMPACTION_THRESHOLD_TOKENS = round(CONTEXT_LIMIT_TOKENS * SESSION_COMPACTION_TRIGGER_RATIO)
+SESSION_COMPACTION_TARGET_TOKENS = round(CONTEXT_LIMIT_TOKENS * SESSION_COMPACTION_TARGET_RATIO)
+SESSION_MIN_RECENT_ROUNDS = 2
+# 重要结果保护：标 important 的轮进 pinned 区，**永不被 compaction 折叠**，渲染时全文置顶注入。
+# FIFO 上限 + 单条长度上限防膨胀；pinned 不计入触发阈值（不可压，计入会导致压不下去）。
+SESSION_MAX_PINNED = 8
+SESSION_PIN_MAX_CHARS = 500
+# 每折叠 N 次，做一次「全量结构化重摘」(LLM-only)：把滚动 summary 重新组织成
+# 目标/决策/未决项/主题，修正增量折叠的漂移与碎片化。离线(无 key)不触发，保持纯增量(§14-7)。
+SESSION_RESUMMARIZE_EVERY = 3
 # 记忆召回相似度闸门（仅对 cosine 相似度分数有意义，即 vector/hybrid 模式；
 # FTS 的 RRF 位置分不是相似度，不适用本闸门）。
 #   - MIN_SIM：top1 低于它 → 判“没有找到明确记忆”（不编造）。

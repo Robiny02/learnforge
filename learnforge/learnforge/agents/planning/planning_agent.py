@@ -107,6 +107,10 @@ class PlanningAgent(BaseAgent):
 
         # 1) 自主路径：ReactRunner 让模型决定调 notion.sync / report.generate（可都调）。
         if tools:
+            from ...integrations.gpt_image import asset_url
+            img_url = asset_url(self.last_plan_image_path)
+            img_hint = (f"已生成信息图，report.generate 时把 image 参数设为 {img_url}。"
+                        if img_url else "")
             try:
                 from ..react.loop import ReactRunner
 
@@ -114,11 +118,12 @@ class PlanningAgent(BaseAgent):
                     self,
                     user_prompt=(
                         f"我已生成如下可执行的学习计划：\n{plan_text}\n\n"
+                        f"计划设计依据(rationale)：{diff.rationale or '（无）'}\n\n"
                         "请发布成一份 LearnForge 风格的学习计划：要体现弱点优先、每日目标、练习任务、"
                         "验收标准、mock/QA 复盘节点，而不是只列清单。"
                         "可调用 notion.sync 发成 Notion 笔记、和/或 report.generate 生成本地 Markdown 报告。"
                         "参数 days 用 {天序号(从0):[条目]} 结构，summary 写 1-2 句说明为何这样排序，"
-                        "tips 给 2-4 条可执行建议。"
+                        "rationale 传上面的计划设计依据，tips 给 2-4 条可执行建议。" + img_hint
                     ),
                     tool_names=tools,
                     system="你是计划发布助手。用工具把计划发布出去，不要只用文字回答。",
@@ -147,10 +152,15 @@ class PlanningAgent(BaseAgent):
             if isinstance(out, dict) and not out.get("error"):
                 self.last_notion_url = out.get("url")
         if not self.last_notion_url and not self.last_report_path and self.has_tool("report.generate"):
+            from ...integrations.gpt_image import asset_url
             from ...integrations.report import report_generate_handler
             out = report_generate_handler({"title": "LearnForge 学习计划",
                                            "summary": "弱点优先的分天复习计划：每一天都要产出可验证的面试表达，而不只是看完材料。",
                                            "days": days,
+                                           # 把模型的计划设计说明渲染进报告（替代千篇一律的模板说明）。
+                                           "rationale": diff.rationale or "",
+                                           # 有信息图就嵌入报告顶部（house style 学习路线图）。
+                                           "image": asset_url(self.last_plan_image_path) or "",
                                            "tips": [
                                                "每天保留一条 answer card：危险说法、合格说法、强回答",
                                                "每两个学习日做一次短 mock，低分点回写 weak memory",
