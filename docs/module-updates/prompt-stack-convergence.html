@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnForge · 上下文架构收敛（Step A/B/G：SOP + 固定 8 层 Prompt Stack + 诚实面板）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#9098a1; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:27px;margin:0 0 8px}
+  h1 .tag{font-size:13px;font-weight:600;color:var(--green);border:1px solid var(--green);
+    border-radius:20px;padding:2px 12px;vertical-align:middle;margin-left:10px}
+  .sub{color:var(--muted);font-size:15px;margin:0}
+  h2{font-size:20px;margin:46px 0 16px;padding-left:12px;border-left:3px solid var(--accent)}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:4px;
+    font-size:13px;color:var(--purple)}
+  .muted{color:var(--muted)} b.grn{color:var(--green)} b.red{color:var(--red)} b.amb{color:var(--amber)}
+  .step{display:inline-block;font-size:12px;font-weight:700;color:var(--bg);background:var(--accent);
+    border-radius:5px;padding:1px 9px;margin-right:8px;vertical-align:middle}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  .ba .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .ba .card.old{border-color:#5a3a3a} .ba .card.new{border-color:#2e5a3a}
+  .ba h4{margin:0 0 10px;font-size:13px;letter-spacing:.5px;text-transform:uppercase}
+  .ba .old h4{color:var(--red)} .ba .new h4{color:var(--green)}
+  .ba ul{margin:0;padding-left:18px} .ba li{margin:6px 0;font-size:13px}
+  .stack{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  .stack .row{display:flex;align-items:center;gap:10px;padding:3px 0}
+  .stack .n{width:20px;color:var(--muted);text-align:right}
+  .stack .nm{flex:0 0 210px;color:var(--fg)}
+  .stack .d{color:var(--muted)}
+  .stack .pfx{color:var(--green)} .stack .vol{color:var(--amber)}
+  .stack .new{color:var(--accent);font-weight:700}
+  .stack .hd{color:var(--muted);font-size:11px;letter-spacing:.5px;margin:8px 0 2px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:hover td{background:#1b212b}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .pill.add{color:var(--green);background:rgba(63,185,80,.12)}
+  .pill.mod{color:var(--amber);background:rgba(210,153,34,.12)}
+  .pill.rm{color:var(--red);background:rgba(248,81,73,.12)}
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:10px;margin:14px 0;overflow:hidden}
+  .code .bar{background:var(--panel2);padding:6px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .code pre{margin:0;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.5;overflow-x:auto;color:#c9d1d9;white-space:pre}
+  .k{color:#ff7b72} .s{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff}
+  .note{border-left:3px solid var(--amber);background:rgba(210,153,34,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .ok{color:var(--green);font-weight:600}
+  ol li,ul li{margin:6px 0}
+  footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>上下文架构收敛 <span class="tag">Step A · B · G 已交付</span></h1>
+  <p class="sub">从"多个并列上下文槽 + SOP 散落硬编码字符串 + 面板谎报"收敛为
+  <b>固定 8 层 Prompt Stack + 结构化 SOP（Active Skill）+ 与真实 prompt 一致的可观测面板</b>，
+  更接近 Claude Code 的稳定 prompt 组织。</p>
+  <p class="sub muted" style="margin-top:6px">分支 <code>feat/mock-answer-quality</code> ·
+  全离线确定性 · <span class="ok">579 passed / 11 skipped，无回归</span> · 不增新上下文槽</p>
+</header>
+
+<!-- 目标 -->
+<h2>0 · 收敛目标</h2>
+<div class="panel">
+  <p style="margin-top:0">原则：<b>不再继续新增特殊上下文槽</b>，不再围绕 pinned / tools / attachments 做复杂特判。
+  每个 Agent 的差异应来自 <b>Active Skill / Allowed Tools / Evidence 来源 / Output Schema</b>，
+  而不是各自拼一套上下文。本批（A+B+G）落地"<b>SOP 层 + 统一 assembler + 诚实可观测</b>"三件，
+  为后续 event/artifact 收敛（C–F）打地基。</p>
+</div>
+
+<!-- ============ A ============ -->
+<h2><span class="step">A</span>统一 Agent SOP / Active Skill 层</h2>
+<p>把每个 Agent 的稳定执行规则从"散落在 system_prompt / progressive_sections 字符串"收敛成
+<b>结构化、可拆分、可测试、可独立 review</b> 的 SOP——作为 Active Skill 注入，<b>不含任何动态上下文</b>。</p>
+
+<div class="ba">
+  <div class="card old">
+    <h4>✗ 之前</h4>
+    <ul>
+      <li>SOP = 一大段硬编码字符串（部分在 <code>progressive_sections["sop"]</code>，部分没有）</li>
+      <li>改 QA 答题风格要在长字符串里找；难独立 review</li>
+      <li>SOP 与工具清单/边界混在 constitution 一坨</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>✓ 现在</h4>
+    <ul>
+      <li><code>SOP</code> dataclass：role / responsibility / inputs / steps / tool_use / output / degradation / not_responsible / examples，字段可单独改</li>
+      <li>一文件一能力域：<code>skills/sops/{qa,planning,diagnosis,mock,manager}.py</code>，独立 review</li>
+      <li><code>render_sop()</code> 确定性纯函数；改 SOP <b>不动 assembler 主链路</b>、不影响其它 Agent</li>
+    </ul>
+  </div>
+</div>
+
+<div class="code">
+  <div class="bar">skills/sops/planning.py — 可逐字段演进的 SOP（节选）</div>
+<pre>PLANNING_SOP = <span class="fn">SOP</span>(
+  role=<span class="s">"你是 LearnForge 的学习规划师：把弱点诊断转成可执行训练路径。只排程，不评判对错。"</span>,
+  steps=[<span class="s">"只用候选里的真实 atom_id；按 priority=weakness*goal_relevance*recency/max(mastery,.2) 排序"</span>, …],
+  output=[<span class="s">"只产增量 PathDiff（add/remove/reorder + rationale），不全量重写"</span>, …],
+  degradation=[<span class="s">"无 LLM key → 确定性排程兜底，仍产合法 PathDiff"</span>],
+  not_responsible=[<span class="s">"不直接写 learning_paths/mastery"</span>, <span class="s">"不判薄弱点（那是 diagnosis）"</span>])</pre>
+</div>
+
+<p><b>边界守护（你的 #5/#8）：</b>测试断言 SOP 不含 <code>【最近对话】/【可引用附件】</code> 等动态标记；
+已有 SOP 字符串<b>原样转结构化（近零漂移）</b>，Manager/QA-synth/Mock-shell 新增简明 SOP。
+维护入口见 <code>skills/sops/README.md</code>。诊断 SOP 写明：<b>只基于结构化证据，不被闲聊/情绪污染</b>。</p>
+
+<!-- ============ B ============ -->
+<h2><span class="step">B</span>收敛 assembler 为固定 8 层 Prompt Stack</h2>
+<p>所有子 Agent 走<b>同一套</b>有序分层 prompt；差异只来自各层内容。新增 <b>Project Guide</b> 层，
+把旧的"一坨 constitution"拆成 <b>Active Skill</b>（怎么做事）+ <b>Tool Registry</b>（能用什么）。</p>
+
+<div class="stack">
+  <div class="hd">稳定 prefix（每 agent 稳定，可缓存）</div>
+  <div class="row"><span class="n">1</span><span class="nm pfx">System / Constitution</span><span class="d">身份 + 安全 + 格式不变量</span></div>
+  <div class="row"><span class="n">2</span><span class="nm new">Project Guide ★新</span><span class="d">PROJECT_GUIDE.md：架构 + 硬不变量 + 输出规范</span></div>
+  <div class="row"><span class="n">3</span><span class="nm pfx">User Memory</span><span class="d">MEMORY.md 长期稳定偏好</span></div>
+  <div class="row"><span class="n">4</span><span class="nm new">Active Skill ★拆出</span><span class="d">当前 agent 的 SOP（persona + 结构化 SOP）</span></div>
+  <div class="row"><span class="n">5</span><span class="nm new">Tool Registry ★拆出</span><span class="d">allowed_tools + 边界 + output_schema</span></div>
+  <div class="hd">易变尾部（每轮变化）</div>
+  <div class="row"><span class="n">6</span><span class="nm vol">Conversation State</span><span class="d">最近发生了什么 / 有哪些 artifact（compact + recent）</span></div>
+  <div class="row"><span class="n">7</span><span class="nm vol">Evidence</span><span class="d">这轮回答基于的具体材料（检索/附件召回/repo）</span></div>
+  <div class="row"><span class="n">8</span><span class="nm vol">User Input</span><span class="d">当前用户输入</span></div>
+</div>
+
+<div class="ba">
+  <div class="card old">
+    <h4>✗ 之前（Step A 后）</h4>
+    <ul>
+      <li>5 段：system / skill(system_prompt) / <b>constitution(边界+SOP 混)</b> / memory / retrieved / session / input</li>
+      <li>无 Project Guide；工具边界与 SOP 混在一层</li>
+      <li>volatile 顺序：evidence → session → input</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>✓ 现在</h4>
+    <ul>
+      <li>固定 8 层，层层有 <code>【层名】</code> 标题，模型可区分、面板可逐层报 token</li>
+      <li>Active Skill 与 Tool Registry 各自独立；新增 Project Guide</li>
+      <li>volatile 目标序：<b>Conversation State → Evidence → User Input</b>（证据贴近问题）</li>
+    </ul>
+  </div>
+</div>
+
+<p><b>落点：</b><code>memory/context_assembler.py</code>（8 层 <code>AssembledPrompt</code> + <code>layer_sizes()</code>）、
+<code>memory/project_guide.py</code> + <code>learnforge/PROJECT_GUIDE.md</code>（缺失→空串降级）、
+<code>agents/base.py</code>（<code>_active_skill_layer</code> / <code>_tool_registry_layer</code>）。
+<b>所有子 agent 一个改点全继承</b>。<b class="amb">兼容</b>：<code>assemble_prompt</code> 保留旧参数名作别名，老调用/测试不破。
+<b class="amb">例外</b>：Manager 仍绕过 assembler（直调 LLM 路由），接入留待 Step F。</p>
+
+<!-- ============ G ============ -->
+<h2><span class="step">G</span>可观测性：面板镜像真实 8 层</h2>
+<p><code>prompt_load_overview</code> 现按固定 8 层逐层报告 <code>{layer, kind, name, summary, tokens}</code>，
+与 assembler <b>一一对应</b>，<b>只展示真正进入 prompt 的层</b>。</p>
+
+<table>
+  <thead><tr><th>层</th><th>面板展示</th><th>来源（真实可测）</th></tr></thead>
+  <tbody>
+    <tr><td>1 System</td><td>固定 system 串 + token</td><td><code>_DEFAULT_SYSTEM</code></td></tr>
+    <tr><td>2 Project Guide</td><td>是否加载 + token</td><td><code>project_guide_text()</code></td></tr>
+    <tr><td>3 User Memory</td><td>是否加载 + token</td><td>MEMORY.md</td></tr>
+    <tr><td>4 Active Skill</td><td><b>是哪个 skill</b> + token</td><td>本轮子 agent（由 dialogue_turns capability 推断）</td></tr>
+    <tr><td>5 Tool Registry</td><td>是哪个 + allowed_tools</td><td>同上 skill</td></tr>
+    <tr><td>6 Conversation State</td><td>逐段 pinned/summary/recent/最近调用/可引用附件 + token</td><td><code>build_session_context</code>（与注入<b>同源</b>）</td></tr>
+    <tr><td>7 Evidence</td><td>本轮材料 + token</td><td>调用方传入才报（不臆造）</td></tr>
+    <tr><td>8 User Input</td><td>当前输入 + token</td><td>server 传 <code>req.text</code></td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <b>诚实原则：</b>可测量才报。无法判定子 agent → 不臆造 Active Skill/Tool Registry；Evidence transient →
+  调用方不传就不报。<b>不再显示"实际没进 prompt"的幻影注入</b>（该幻影在更早的 session-context 接线时已清除，此处延续）。
+</div>
+
+<!-- 测试 -->
+<h2>1 · 测试（全离线）</h2>
+<ul>
+  <li><span class="pill add">新</span> <code>tests/test_sop.py</code>（23 例）：SOP 渲染确定性/纯函数、每个 Agent 的 SOP 进入 prompt、SOPS↔SkillSpec 一致、<b>无动态上下文标记</b>、未迁移 skill 兼容回退。</li>
+  <li><code>tests/test_prompt_assembly.py</code>：新 volatile 序、8 层 prefix/suffix 划分、<b>Project Guide/Active Skill/Tool Registry 进入真实 agent system prefix</b>。</li>
+  <li><code>tests/test_phase1_session_context.py</code>：面板镜像 8 层（System/Project Guide/Active Skill=qa.shell.v1/User Input 各带 token、按层序）、无 agent 时不臆造。</li>
+  <li>迁移兼容：5 个断言旧 SOP 标题的测试改为断言<b>保留的内容</b>（标题是装饰，内容不变）。</li>
+</ul>
+
+<!-- 不变量 -->
+<h2>2 · 不变量 & 边界</h2>
+<ul>
+  <li><b class="grn">Manager 仍是唯一编排者 + 唯一写者</b>；子 Agent 只读上下文。</li>
+  <li><b class="grn">Diagnosis 仍客观</b>：SOP 明确只基于结构化证据，不被闲聊污染。</li>
+  <li><b class="grn">离线降级</b>：无 key / 无 PROJECT_GUIDE.md / 无 vision 均优雅降级，链路永远通。</li>
+  <li><b class="amb">保留兼容</b>：assemble_prompt 旧参数别名、旧 pinned/progressive_sections 读取；<b>未迁移</b> Router/Verifier/Retrieval/Judge/Strategist 回退 system_prompt。</li>
+  <li><b class="amb">待后续</b>：C–E（event/artifact 收敛 + Evidence 统一 + 跨轮附件召回）、F（Manager 轻量 routing context 接入 assembler）。</li>
+</ul>
+
+<!-- CC 对比 -->
+<h2>3 · 与 Claude Code 的差异</h2>
+<p>Claude Code 是<b>单 Agent、append-only transcript</b>——所有消息/工具结果都在它自己的上下文里，靠 compaction 收口。
+LearnForge 是 <b>Manager + 无状态 workers</b>：每次子 agent 调用都<b>重新装配</b>一个固定 8 层 prompt，连续性靠显式
+注入 Conversation State + 召回 Evidence 恢复。本批让"装配"统一、分层、可观测；
+后续 C–F 会把 pinned/tools/attachments 进一步收敛为<b>统一 event log + artifact retrieval</b>，正是为了在无状态 worker 模型下补回 Claude Code 那种"它知道自己做过什么"的连续性。</p>
+
+<footer>
+  LearnForge · module-updates / prompt-stack-convergence（Step A/B/G）<br>
+  相关：<code>skills/sops/README.md</code>（SOP 维护入口） · <code>learnforge/PROJECT_GUIDE.md</code>（运行时宪法） ·
+  <code>session-context-injection.html</code>（会话上下文接线） · <code>context-compaction.html</code>（compaction/pinned）
+</footer>
+
+</div>
+</body>
+</html>

@@ -87,7 +87,7 @@ def test_planning_skill_loads_sop_and_fewshot():
     ensure_skills_registered()
     sk = SKILL_REGISTRY.primary(AgentId.PLANNING)
     instr = sk.load_instructions()
-    assert "排程 SOP" in instr
+    assert "学习规划师" in instr  # 结构化排程 SOP（role）进入说明
     assert "few-shot" in instr
     # few-shot 给出好/烂 rationale 对照，压住「已生成计划」式空话
     assert "烂 rationale" in instr and "好 rationale" in instr

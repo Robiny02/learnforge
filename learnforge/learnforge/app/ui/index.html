@@ -32,6 +32,7 @@
             <span id="contextPct">0%</span>
             <div class="context-track" aria-hidden="true"><i id="contextFill"></i></div>
           </div>
+          <span id="skillTag" class="skill-tag" hidden title="本轮触发的 skill">skill —</span>
           <span id="traceId">trace idle</span>
         </div>
       </header>
@@ -83,6 +84,14 @@
                 </select>
                 <button type="button" id="mockToggle" class="mock-toggle" aria-pressed="false">开始 Mock</button>
               </div>
+            </div>
+
+            <div class="mock-hud" id="mockHud" hidden>
+              <span class="hud-badge">🎙 模拟面试</span>
+              <span class="hud-stat" id="hudTurn">第 0 轮</span>
+              <span class="hud-stat" id="hudPhase">进行中</span>
+              <span class="hud-spacer"></span>
+              <span class="hud-hint">直接作答 · “解释一下”插问 · “结束”出复盘</span>
             </div>
 
             <div class="conversation" id="conversation" aria-live="polite">

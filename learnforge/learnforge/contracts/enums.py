@@ -7,7 +7,7 @@ from enum import Enum
 
 
 class AgentId(str, Enum):
-    """13 个 agent 的稳定标识（Design §2a 职责矩阵）。"""
+    """agent 的稳定标识（Design §2a 职责矩阵）。"""
 
     MANAGER = "manager"
     QA = "qa"
@@ -22,6 +22,7 @@ class AgentId(str, Enum):
     STRATEGIST = "strategist"
     COACH = "coach"
     DIAGNOSIS = "diagnosis"
+    EVIDENCE = "evidence"  # 统一只读证据 worker（EvidenceResearchAgent），由 Manager 调用
 
 
 class MsgType(str, Enum):
@@ -69,6 +70,36 @@ class StrategistAction(str, Enum):
     PAUSE = "pause"
     END = "end"
     ESCALATE = "escalate"
+
+
+class InterviewPhase(str, Enum):
+    """模拟面试环节（蒸馏自 tech-interview skill 的三环节）。Director 据答题推进。"""
+
+    BASICS = "basics"                # 基础知识
+    PROJECT = "project"              # 项目深挖
+    SYSTEM_DESIGN = "system_design"  # 系统设计 / 编码
+
+
+class InterviewMove(str, Enum):
+    """InterviewDirector 的动作空间（替代旧 Strategist + 状态机固定边路由）。
+
+    比 StrategistAction 更丰富：含证据式追问 / 简历诚信点破 / 高质量解答 / 纠错 / 空转检查。
+    路由由 Director 智能选取（Haiku + 确定性兜底），生成交给 Interviewer（强模型）。
+    """
+
+    ASK = "ask"                  # 出新题（必要时推进环节）
+    FOLLOWUP = "followup"        # 顺着上一轮回答深挖
+    PROBE = "probe"              # 简历诚信：答不出简历写的内容 → 点破
+    HINT = "hint"                # 导师模式给思路（不给答案）
+    REVEAL = "reveal"            # 公布高质量参考答案
+    CORRECT = "correct"          # 答错 → 高质量纠正后继续
+    RAISE = "raise"              # 升难度
+    LOWER = "lower"              # 降难度
+    SWITCH_TOPIC = "switch_topic"
+    CHECK_CONTINUE = "check_continue"  # 空转≥阈值 → 主动问继续拷打还是总结
+    SUMMARIZE = "summarize"      # 收尾 → 终场复盘
+    ESCALATE = "escalate"        # 跨能力 → 交回 Manager
+    PAUSE = "pause"
 
 
 class PlanMode(str, Enum):
@@ -221,6 +252,19 @@ class ExternalSourceKind(str, Enum):
     TECH_BLOG = "tech_blog"          # 技术博客：fetch 正文（只算"项目说明"，非源码级证据）
     DOCS_PAGE = "docs_page"          # 文档站（gitbook/notion/readthedocs）：fetch 作文档证据
     UNKNOWN_URL = "unknown_url"      # 其它：尝试 fetch，失败记录原因
+
+
+class EvidenceSourceType(str, Enum):
+    """EvidenceResearchAgent 支持的证据来源类型（统一只读 worker 读取不同 source）。
+
+    第一阶段统一一个证据 worker；后续若 repo/简历/文档分析复杂化，再拆成
+    RepoResearchAgent / ResumeResearchAgent / DocumentResearchAgent。
+    """
+
+    RESUME = "resume"            # 简历正文 / 已存简历诊断（resume.recall）
+    REPO = "repo"               # 工作区源码关键词搜索（repo.search）
+    FILE = "file"               # 工作区内具体文件（file.read）
+    ATTACHMENT = "attachment"    # 上传附件材料（attachment.recall）
 
 
 class ClaimType(str, Enum):

@@ -48,7 +48,8 @@ class PlanningAgent(BaseAgent):
         prompt = self._build_prompt(payload, atoms)
         # 按需检索：读上传的 JD/简历/学习材料/历史计划（local），经 retrieved 槽进 prompt。
         materials = self._recall_materials(payload)
-        out = self.llm_structured(prompt, PlanningOutput, max_tokens=2048, retrieved=materials)
+        out = self.llm_structured(prompt, PlanningOutput, max_tokens=2048,
+                                  retrieved=materials, session=payload.session_context)
         if out is not None:
             # 关键：模型常编造不存在的 atom_id（如 '1','2'），落库会被外键过滤成空计划。
             # 这里把 add 约束到真实候选 atom_id，过滤后为空但有候选 → 确定性兜底，保证计划可落库。

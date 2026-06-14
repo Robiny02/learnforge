@@ -47,6 +47,8 @@ class SynthesizerInput(BaseModel):
     retrieved: List[Chunk] = Field(default_factory=list)
     scoped_atoms: List[AtomBrief] = Field(default_factory=list)
     project_context: Optional[str] = None
+    # 跨轮会话上下文（pinned/summary/recent/最近调用/附件引用，已装配且有界）→ session 槽。
+    session_context: str = ""
     # 多模态附件：文本类内容(→证据槽)与图片 data URL(→vision)。
     attachment_text: str = ""
     image_data_urls: List[str] = Field(default_factory=list)
@@ -80,6 +82,8 @@ class QAInput(BaseModel):
     question: str
     project_context_ref: Optional[str] = None
     scoped_atoms: List[AtomBrief] = Field(default_factory=list)
+    # 跨轮会话上下文（由 Manager 装配且有界）→ 透传给 Synthesizer 的 session 槽。
+    session_context: str = ""
     # 多模态附件(本地上传)：文本类已抽成文本(→证据)，图片为 data URL(→vision)。
     attachment_text: str = ""
     image_data_urls: List[str] = Field(default_factory=list)

@@ -41,11 +41,11 @@ def test_every_classified_action_is_registered():
         assert ACT.REGISTRY[action].channel in _VALID_CHANNELS
 
 
-def test_control_action_names_match_subgraph_and_mock_turn():
+def test_control_action_names_match_mock_turn():
+    # 单一来源：动作注册表的控制动作名 == mock_turn 的控制动作集合（旧子图已被 InterviewDirector 取代）。
     from learnforge.intent.mock_turn import CONTROL_ACTIONS
-    from learnforge.orchestration.graph.mock_graph import _CONTROL_ACTIONS
 
-    assert set(ACT.CONTROL_ACTION_NAMES) == set(CONTROL_ACTIONS) == _CONTROL_ACTIONS
+    assert set(ACT.CONTROL_ACTION_NAMES) == set(CONTROL_ACTIONS)
 
 
 def test_control_specs_have_valid_goto():

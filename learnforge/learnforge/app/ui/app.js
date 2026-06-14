@@ -105,6 +105,11 @@ const memoryLog = document.querySelector("#memoryLog");
 const memTokens = document.querySelector("#memTokens");
 const convList = document.querySelector("#convList");
 const newChatBtn = document.querySelector("#newChatBtn");
+const chatCard = document.querySelector(".chat-card");
+const mockHud = document.querySelector("#mockHud");
+const hudTurn = document.querySelector("#hudTurn");
+const hudPhase = document.querySelector("#hudPhase");
+const skillTag = document.querySelector("#skillTag");
 
 const GREETING =
   "早上好，今天的学习地块已经晒到太阳了。把一个概念、项目问题或面试主题丢过来，我们先从最需要浇水的地方开始。";
@@ -132,7 +137,34 @@ const agentLabels = {
   planning: ["Planning", "生成或修改学习路径"],
   mock: ["Mock", "启动模拟面试子图"],
   note: ["Note", "生成结构化学习笔记"],
+  evidence: ["Evidence", "只读读取来源，产出证据包"],
 };
+
+// 每个能力对应的 runtime skill（与 skills/definitions/__init__.py 对齐）：
+// trace 里显式标出「本轮触发了哪个 skill」，让调用链路一眼可读。
+const skillForAgent = {
+  manager: { id: "manager.v1", label: "调度编排" },
+  qa: { id: "qa.shell.v1", label: "QA 问答" },
+  diagnosis: { id: "diagnosis.v1", label: "弱点诊断" },
+  planning: { id: "planning.v1", label: "学习规划" },
+  mock: { id: "mock.shell.v1", label: "模拟面试" },
+  note: { id: "qa.shell.v1", label: "学习笔记" },
+  evidence: { id: "evidence.research.v1", label: "证据研究" },
+};
+
+// agent(+本轮 plan task 的旗标) → 实际触发的 skill。简历诊断走专门 skill；
+// fast lane 复用同 skill 但标 fast（绕过 Manager LLM 路由的快路径）。
+function resolveSkill(agent, task) {
+  task = task || {};
+  if (agent === "diagnosis" && task.task_type === "resume_diagnosis") {
+    return { id: "diagnosis.resume.v1", label: "简历诊断" };
+  }
+  const base = skillForAgent[agent] || {
+    id: String(agent || "agent"),
+    label: String(agent || "agent"),
+  };
+  return { id: base.id, label: base.label, fast: !!task.fast };
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -708,6 +740,14 @@ function restoreMock() {
   } catch (e) { /* 损坏数据 → 忽略 */ }
 }
 
+// mock HUD：进行中在对话区顶部挂一条「面试间」状态条（轮次 + 阶段）。
+function updateMockHud() {
+  if (!mockHud) return;
+  mockHud.hidden = !state.mock.active;
+  if (hudTurn) hudTurn.textContent = `第 ${state.mock.turns || 0} 轮`;
+  if (hudPhase) hudPhase.textContent = state.mock.pendingExit ? "待确认结束" : "进行中";
+}
+
 // mock 进行中：切换控件文案/状态条/输入提示。mode 仍可用（切到 QA 等即可插问）。
 function setMockActive(active, sessionId) {
   state.mock.active = active;
@@ -728,6 +768,8 @@ function setMockActive(active, sessionId) {
   } else {
     setMode((modeSelect && modeSelect.value) || state.mode || "qa");
   }
+  if (chatCard) chatCard.classList.toggle("mock-active", active);  // 整页「面试间」换肤
+  updateMockHud();
   persistMock();
 }
 
@@ -781,9 +823,15 @@ if (mockToggle) {
 function addMessage(role, text, meta = "") {
   const article = document.createElement("article");
   const diagnosisClass = role === "agent" && isResumeDiagnosisMarkdown(text) ? " diagnosis-message" : "";
-  article.className = `message ${role}${diagnosisClass}`;
+  // mock 对话视觉区分（按 meta 判定，回放历史也成立）：面试官出题 vs 面试中的考生作答/插问。
+  const isInterviewer = role === "agent" && /Interviewer|面试官/.test(meta || "");
+  const isMockUser = role === "user" && /^(MOCK|插问)/.test(meta || "");
+  const mockClass = isInterviewer ? " interviewer" : isMockUser ? " mock-user" : "";
+  article.className = `message ${role}${diagnosisClass}${mockClass}`;
   const safeMeta = escapeHtml(meta || (role === "user" ? "You" : "LearnForge"));
-  const avatarClass = role === "user" ? "avatar-user" : "avatar-agent";
+  const avatarClass = role === "user"
+    ? "avatar-user"
+    : isInterviewer ? "avatar-interviewer" : "avatar-agent";
   article.innerHTML = `
     <div class="pixel-avatar ${avatarClass}" aria-hidden="true"><span></span></div>
     <div class="message-bubble">
@@ -910,11 +958,16 @@ function setChain(items, activeIndex = -1) {
   items.forEach((item, index) => {
     const key = item.agent || item;
     const [title, desc] = agentLabels[key] || [key, "执行任务"];
+    const skill = resolveSkill(key, item.task);
     const li = document.createElement("li");
     li.className = index === activeIndex ? "active" : "";
     li.innerHTML = `
       <span class="node ${escapeHtml(key)}"></span>
-      <div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(item.detail || desc)}</small></div>
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <span class="skill-chip${skill.fast ? " fast" : ""}" title="触发 skill：${escapeHtml(skill.id)}">⚡ ${escapeHtml(skill.label)}${skill.fast ? " · fast" : ""}<em>${escapeHtml(skill.id)}</em></span>
+        <small>${escapeHtml(item.detail || desc)}</small>
+      </div>
     `;
     agentChain.appendChild(li);
   });
@@ -942,7 +995,7 @@ function chainFromData(data) {
   const plan = Array.isArray(data.plan) ? data.plan : [];
   if (plan.length) {
     return [{ agent: "manager", detail: "生成计划" }].concat(
-      plan.map((task) => ({ agent: task.agent || task.target_agent || "agent" }))
+      plan.map((task) => ({ agent: task.agent || task.target_agent || "agent", task }))
     );
   }
   if (data.mock) return [{ agent: "manager" }, { agent: "mock" }];
@@ -957,8 +1010,10 @@ function renderActivity(data) {
     traceId.textContent = data.mock ? "trace mock-local" : "trace unavailable";
   }
   const responses = Array.isArray(data.responses) ? data.responses : [];
+  let lastSkill = null;
   responses.forEach((response, index) => {
-    const agent = data.plan && data.plan[index] ? data.plan[index].agent : "agent";
+    const task = data.plan && data.plan[index] ? data.plan[index] : null;
+    const agent = task ? task.agent : "agent";
     const result = response.result || {};
     let detail = `confidence=${response.confidence ?? "n/a"}`;
     if (agent === "diagnosis") detail = `clusters=${(result.clusters || []).length}`;
@@ -967,8 +1022,23 @@ function renderActivity(data) {
       const diff = result.diff || {};
       detail = result.skipped ? "modify skipped" : `add=${(diff.add || []).length}, remove=${(diff.remove || []).length}`;
     }
+    const sk = resolveSkill(agent, task);
+    lastSkill = sk;
+    logLine("Skill", `${sk.label} · ${sk.id}${sk.fast ? " · fast" : ""}`);
     logLine(agent || "Agent", detail);
   });
+  // 无 responses（fast-qa / mock / 简历诊断等单步路径）→ 从 plan 兜底推断触发的 skill。
+  if (!lastSkill) {
+    const plan = Array.isArray(data.plan) ? data.plan : [];
+    const task = plan[plan.length - 1];
+    if (task) lastSkill = resolveSkill(task.agent || task.target_agent, task);
+    else if (data.mock) lastSkill = resolveSkill("mock", {});
+  }
+  if (skillTag && lastSkill) {
+    skillTag.hidden = false;
+    skillTag.textContent = `⚡ ${lastSkill.label}${lastSkill.fast ? " · fast" : ""}`;
+    skillTag.title = `本轮触发 skill：${lastSkill.id}`;
+  }
   if (Array.isArray(data.next_actions)) {
     data.next_actions.slice(0, 2).forEach((action) => logLine("Next", action));
   }
@@ -1138,6 +1208,7 @@ async function sendPrompt(text, opts = {}) {
     if (data.mock_side && state.mock.active && state.mock.lastQuestion) {
       addSystem(`（面试继续）当前待答问题：${state.mock.lastQuestion}`);
     }
+    updateMockHud();  // 轮次/阶段刷新到面试间状态条
     chainStatus.textContent = data.status || "ok";
   } catch (err) {
     if (err.name === "AbortError") {

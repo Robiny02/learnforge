@@ -213,6 +213,7 @@ class QAAgent(BaseAgent):
                 retrieved=[],
                 scoped_atoms=payload.scoped_atoms,
                 project_context=payload.project_context_ref,
+                session_context=payload.session_context,
             )
         )
         self.last_cost_usd = getattr(self.synthesizer, "last_cost_usd", 0.0)
@@ -447,6 +448,7 @@ class QAAgent(BaseAgent):
                 retrieved=[],
                 scoped_atoms=payload.scoped_atoms,
                 project_context=payload.project_context_ref,
+                session_context=payload.session_context,
                 attachment_text=payload.attachment_text,
                 image_data_urls=payload.image_data_urls,
             )
@@ -482,6 +484,7 @@ class QAAgent(BaseAgent):
                 retrieved=chunks,
                 scoped_atoms=payload.scoped_atoms,
                 project_context=payload.project_context_ref,
+                session_context=payload.session_context,
                 attachment_text=payload.attachment_text,
                 image_data_urls=payload.image_data_urls,
             )

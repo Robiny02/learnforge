@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnForge · Mock 重构：LangGraph 状态机 → InterviewDirector 智能规划</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#9098a1; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:26px;margin:0 0 8px;line-height:1.3}
+  h1 .tag{font-size:13px;font-weight:600;color:var(--green);border:1px solid var(--green);
+    border-radius:20px;padding:2px 12px;vertical-align:middle;margin-left:10px}
+  .sub{color:var(--muted);font-size:15px;margin:0}
+  h2{font-size:20px;margin:46px 0 16px;padding-left:12px;border-left:3px solid var(--accent)}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:4px;
+    font-size:13px;color:var(--purple)}
+  b.grn{color:var(--green)} b.red{color:var(--red)} b.amb{color:var(--amber)} b.acc{color:var(--accent)} b.pur{color:var(--purple)}
+  .muted{color:var(--muted)}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  .ba .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .ba .card.old{border-color:#5a3a3a} .ba .card.new{border-color:#2e5a3a}
+  .ba h4{margin:0 0 10px;font-size:13px;letter-spacing:.5px;text-transform:uppercase}
+  .ba .old h4{color:var(--red)} .ba .new h4{color:var(--green)}
+  .ba ul{margin:0;padding-left:18px} .ba li{margin:6px 0;font-size:13px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:hover td{background:#1b212b}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+  .pill.add{color:var(--green);background:rgba(63,185,80,.12)}
+  .pill.mod{color:var(--amber);background:rgba(210,153,34,.12)}
+  .pill.rm{color:var(--red);background:rgba(248,81,73,.12)}
+  .pill.keep{color:var(--accent);background:rgba(88,166,255,.12)}
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:10px;margin:14px 0;overflow:hidden}
+  .code .bar{background:var(--panel2);padding:6px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .code pre{margin:0;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:auto;color:#c9d1d9;white-space:pre}
+  .k{color:#ff7b72} .s{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff}
+  .note{border-left:3px solid var(--amber);background:rgba(210,153,34,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .keypt{border-left:3px solid var(--green);background:rgba(63,185,80,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .flow{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:20px;margin:16px 0;font-family:var(--mono);font-size:12.5px;text-align:center;line-height:2.1;overflow-x:auto}
+  .flow .box{display:inline-block;border:1px solid var(--accent);border-radius:6px;padding:3px 10px;color:var(--accent);margin:0 2px}
+  .flow .box.w{border-color:var(--green);color:var(--green)}
+  .flow .box.t{border-color:var(--purple);color:var(--purple)}
+  .flow .arr{color:var(--muted);margin:0 3px}
+  .flow .loop{color:var(--amber)}
+  ul.tight{margin:8px 0;padding-left:22px} ul.tight li{margin:5px 0}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+  .chip{font-family:var(--mono);font-size:12px;border:1px solid var(--border);border-radius:6px;padding:3px 9px;color:var(--fg);background:var(--panel)}
+  .chip.hi{border-color:var(--green);color:var(--green)}
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Mock 模块重构：状态机 → 智能规划<span class="tag">2026-06</span></h1>
+  <p class="sub">把僵硬的 LangGraph S1–S7 状态机换成手搓的 <code>InterviewDirector</code>；面试官人格全量接入开源 tech-interview-skill；模型分层 + 高质量解答。</p>
+</header>
+
+<div class="keypt">
+<b>一句话：</b>mock 不再由 <b class="red">LangGraph 状态机 + checkpointer</b> 的固定边驱动，改成<b class="grn">每个 HTTP 调用跑一轮、状态存 SQLite、由 <code>InterviewDirector</code> 每步智能选下一个面试官动作</b>。
+与本项目 <code>ManagerAgent.execute_dynamic</code> 用手搓 ReAct 循环替代主图条件边的思路一致——<b class="acc">"智能不在图里，在 Python 里"</b>。
+对外 <code>MockInput / MockOutput</code> 契约完全不变，所以 server / cli 一行没动。
+</div>
+
+<h2>为什么改</h2>
+<p>旧 mock 是 <code>S1_INIT → S2_INTERVIEWER → S3_AWAIT(interrupt) → S4_JUDGE → S5_STRATEGIST → (loop | S6_COACH → S7_SETTLE)</code> 的 LangGraph 子图，配 SqliteSaver 做 interrupt/resume。问题：</p>
+<ul class="tight">
+  <li><b class="red">僵硬</b>：出题→等待→评分→Strategist 写死规则（"连续 2 轮 ≥4 升档"）→固定边路由，节奏由图拓扑决定，不会"看情况"。</li>
+  <li><b class="red">不会临场决策</b>：不能根据回答质量决定是深挖、点破简历、纠错、还是收尾。</li>
+  <li><b class="red">面试官没人格</b>：泛泛出题，不追问到底、不做简历诚信检测。</li>
+</ul>
+
+<h2>改前 vs 改后</h2>
+<div class="ba">
+  <div class="card old">
+    <h4>改前（LangGraph 状态机）</h4>
+    <ul>
+      <li>10 个节点 + 条件边的 <code>mock_graph.py</code>（422 行）</li>
+      <li>路由写死在 <code>StrategistAgent</code> 的关键词 + 难度规则里</li>
+      <li>状态靠 <code>SqliteSaver</code> checkpointer + <code>interrupt()/Command(resume=)</code> replay</li>
+      <li>下一步去哪由<b class="red">图的边</b>决定</li>
+      <li>面试官出泛泛题，无简历诚信/双角色/分环节</li>
+      <li>解答/提示只有 <code>control.py</code> 的确定性模板文案</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>改后（InterviewDirector 智能规划）</h4>
+    <ul>
+      <li>无图。<code>director.py</code> 每轮选 move，<code>mock_agent.py</code> 一调用跑一轮</li>
+      <li>路由由 <code>Director.decide_next</code> 决定：Haiku 路由 + 确定性兜底</li>
+      <li>状态存 <code>MockStateStore</code>（SQLite 自愈表 + dict 兜底），"resume"=读回状态再跑一轮</li>
+      <li>下一步去哪由 <b class="grn">Director 看整场状态</b>决定</li>
+      <li>全量接入 tech-interview 人格：追问到底/简历诚信/双角色💡/三环节/评分 rubric</li>
+      <li>解答/提示/纠错由 <code>Interviewer.explain()</code> 走<b class="grn">强模型</b>高质量生成</li>
+    </ul>
+  </div>
+</div>
+
+<h2>新引擎：每个调用 = 跑一轮</h2>
+<div class="flow">
+<span class="box">store.load(sid)</span><span class="arr">→</span><span class="muted">按输入分流</span><span class="arr">→</span><span class="box t">Judge 评分</span><span class="arr">→</span><span class="box">Director.decide_next</span><span class="arr">→</span><span class="box w">执行 move</span><span class="arr">→</span><span class="box">store.save</span><br>
+<span class="muted" style="font-size:11px">control_action / user_interrupt / user_answer / pending 四路分流 ｜ 无 LangGraph、无 interrupt/resume replay</span>
+</div>
+<div class="code">
+  <div class="bar">agents/mock/mock_agent.py — answer()（精简）</div>
+<pre>state = self.store.<span class="fn">load</span>(sid)
+<span class="k">if</span> state <span class="k">is</span> <span class="k">None</span> <span class="k">or</span> state.status <span class="k">in</span> (<span class="s">"review"</span>,<span class="s">"settled"</span>,<span class="s">"escalated"</span>,<span class="s">"expired"</span>):
+    <span class="k">return</span> MockOutput(status=<span class="s">"expired"</span>, ...)   <span class="cm"># 优雅过期，不崩</span>
+<span class="k">if</span> state.status == <span class="s">"paused"</span>: state.status = <span class="s">"active"</span>  <span class="cm"># 下一条消息即恢复</span>
+followup = self.<span class="fn">_run_turn</span>(state, user_answer, user_interrupt, control_action)
+self.store.<span class="fn">save</span>(state)        <span class="cm"># 状态全量持久化（替代 checkpointer）</span>
+<span class="k">return</span> self.<span class="fn">_to_output</span>(state, followup=followup)</pre>
+</div>
+
+<h2>Director 的动作空间（借旧状态做动作）</h2>
+<p>每轮答完，Director 从受限动作空间里选一个；LLM(Haiku) 路由，解析失败/无 key → <code>_fallback_move</code> 确定性兜底（难度规则 + 环节推进 + 空转/收尾）。</p>
+<div class="chips">
+  <span class="chip hi">ask 出新题/推进环节</span>
+  <span class="chip hi">followup 顺着回答深挖</span>
+  <span class="chip">probe 简历诚信点破</span>
+  <span class="chip">correct 答错→高质量纠正</span>
+  <span class="chip">raise / lower 调难度</span>
+  <span class="chip">switch_topic</span>
+  <span class="chip">check_continue 空转→问继续/总结</span>
+  <span class="chip">summarize 收尾复盘</span>
+  <span class="chip">escalate 交回 Manager</span>
+  <span class="chip">pause</span>
+</div>
+<div class="note">
+Director 只<b>选动作</b>，不生成内容——生成交给 Interviewer（强模型）。这与 <code>ManagerAgent.decide_next</code> 选子 agent 的设计同构。
+<code>CORRECT</code> 只在评分 <code>confidence ≥ 0.5</code> 时才触发，避免离线低置信打分让它每轮都"纠错"。
+</div>
+
+<h2>改了哪些文件</h2>
+<table>
+  <thead><tr><th>文件</th><th></th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>agents/mock/director.py</code></td><td><span class="pill add">新增</span></td><td><b>InterviewDirector</b>：每轮选 move（Haiku + 确定性兜底）+ 中断分类（吸收旧 Strategist 规则）。复用 <code>AgentId.STRATEGIST</code> 槽</td></tr>
+    <tr><td><code>agents/mock/state.py</code></td><td><span class="pill add">新增</span></td><td><b>MockStateStore</b>：<code>MockState</code> 序列化进自愈表 <code>mock_session_state</code>（SQLite + dict 兜底），替代 checkpointer</td></tr>
+    <tr><td><code>agents/mock/mock_agent.py</code></td><td><span class="pill mod">重写</span></td><td>去掉 build_mock_subgraph / Command / checkpointer；start/answer 跑 Director 引擎。保留 <code>mastery_updates</code>/<code>handoff_summary</code></td></tr>
+    <tr><td><code>agents/mock/interviewer.py</code></td><td><span class="pill mod">改写</span></td><td>persona 全量化 + phase/mode 出题 + 题库切片 + 出题走强档；新增 <code>explain(hint/reveal/correct)</code> 高质量双角色解答</td></tr>
+    <tr><td><code>agents/mock/interview_skill.py</code></td><td><span class="pill mod">扩展</span></td><td>新增 <code>QUESTION_PATTERNS</code> 高频题库 + <code>load_question_patterns</code>（离线兜底题源 + few-shot）</td></tr>
+    <tr><td><code>agents/mock/coach.py</code></td><td><span class="pill mod">改</span></td><td>复盘 prompt 采用 tech-interview 评分 rubric + 报告模板（推荐等级/简历校准）</td></tr>
+    <tr><td><code>contracts/agents/mock.py</code></td><td><span class="pill mod">改</span></td><td>新增 <code>MockState</code>；<code>InterviewerInput</code> 加 phase/mode；<code>MockOutput</code> 加 phase/pending</td></tr>
+    <tr><td><code>contracts/enums.py</code></td><td><span class="pill mod">改</span></td><td>新增 <code>InterviewMove</code>（动作空间）+ <code>InterviewPhase</code>（三环节）</td></tr>
+    <tr><td><code>config.py</code></td><td><span class="pill mod">改</span></td><td><code>MOCK_ANSWER_MODEL</code>(LF_MOCK_ANSWER_MODEL) / <code>MOCK_PHASE_QUESTIONS</code> / <code>MOCK_IDLE_ROUNDS_THRESHOLD</code> + <code>mock_answer_model()</code></td></tr>
+    <tr><td><code>skills/definitions/__init__.py</code></td><td><span class="pill mod">改</span></td><td>INTERVIEWER 换 tech-interview 人格 + <code>llm.complete</code> 权限；STRATEGIST skill 重定义为 director 路由人格</td></tr>
+    <tr><td><code>skill_pack/question-patterns.md</code> · <code>NOTICE.md</code></td><td><span class="pill add">新增</span></td><td>vendor 题库参考 + tech-interview-skill 归属</td></tr>
+    <tr><td><code>orchestration/graph/mock_graph.py</code> · <code>graph/mock_graph.py</code> · <code>agents/mock/strategist.py</code></td><td><span class="pill rm">删除</span></td><td>旧 S1–S7 状态机 + StrategistAgent（被 Director 取代）</td></tr>
+    <tr><td><code>agents/mock/actions.py</code> · <code>control.py</code> · <code>intent/mock_turn.py</code> · <code>app/server.py</code> · <code>cli.py</code></td><td><span class="pill keep">未动</span></td><td>MockInput channel 路由是稳定的"接缝"——保住契约即不用改</td></tr>
+  </tbody>
+</table>
+
+<h2>需求逐条落地</h2>
+<table>
+  <thead><tr><th>你的要求</th><th>怎么实现</th></tr></thead>
+  <tbody>
+    <tr><td><b>外部 skill 当面试官</b></td><td>tech-interview-skill 人格全量进 <code>INTERVIEWER_SKILL</code>（直接不留情/追问到底/简历诚信点破/双角色 <code>---</code>+💡/三环节/评分 rubric）；题库蒸馏进 <code>QUESTION_PATTERNS</code>。归属见 <code>NOTICE.md</code></td></tr>
+    <tr><td><b>状态机太僵硬 → 智能规划</b></td><td>删 LangGraph 子图，换 <code>InterviewDirector</code> 每步看状态选 move；借旧状态做动作（escalate / 出题 / 解答）</td></tr>
+    <tr><td><b>退出可由用户输入触发</b></td><td>用户中断（结束/总结/退出…）→ <code>classify_interrupt = SUMMARIZE</code> → 复盘</td></tr>
+    <tr><td><b>很多轮没出题 → 主动问继续/总结</b></td><td>连续 <code>MOCK_IDLE_ROUNDS_THRESHOLD</code>（=3）轮非作答（提示/复述/公布答案/重做）→ <code>pending=continue_decision</code>，followup 问"继续拷打还是总结收尾"，下一轮引擎内消化</td></tr>
+    <tr><td><b>模型分层</b></td><td>路由/分类/评分 <b class="acc">Haiku</b>；出题/解答/纠错 <b class="grn">强档</b>（<code>LF_MOCK_ANSWER_MODEL</code> 可升 Opus，默认 Sonnet）；复盘 <b>Sonnet</b></td></tr>
+    <tr><td><b>mock answer 必须高质量</b></td><td><code>Interviewer.explain()</code> 走强档产出结构化高质量解答；无 key 退回 <code>control.py</code> 确定性文案</td></tr>
+  </tbody>
+</table>
+
+<h2>保住的不变量</h2>
+<ul class="tight">
+  <li><b class="grn">对外契约不变</b>：<code>MockOutput.status ∈ {active, paused, review, escalate, expired}</code> + <code>session_id</code> → server/cli/actions.py 一行没改。</li>
+  <li><b class="grn">链路永远通</b>：Director / Interviewer / Judge / Coach 无 key 都有确定性兜底；离线全程可跑。</li>
+  <li><b class="grn">唯一写者</b>：mock 不提交 mastery；<code>status=review</code> 时 <code>Manager.settle_mock()</code> 读 <code>mastery_updates(sid)</code> 落库。</li>
+  <li><b class="grn">多轮状态保持</b>：去 checkpointer 后，state 跨 HTTP 调用靠 SQLite JSON round-trip（核心测试目标）。</li>
+</ul>
+
+<h2>测试（轻量，聚焦边界 + 多轮状态）</h2>
+<p>新增 <code>tests/test_mock_director.py</code>（18 个，离线确定性）：多轮状态 round-trip / 跨实例 resume / 换 topic 不丢分 / 用户退出 / 暂停-恢复 / 空转阈值触发"继续 or 总结" / escalate / 未知会话过期 / 空作答 / redo 兜底 / Director 单元（中断分类 + 兜底 + 低置信不强纠错 + 环节推进）。</p>
+<div class="panel">
+<b>验证结果：</b> <code>pytest tests/</code> → <b class="grn">597 passed, 11 skipped, 0 failed</b>；<code>ruff</code> 改动文件全 clean。
+LLM-on 端到端：Q1 直接质疑简历"82% 怎么测的 / 谁亲手跑的"，弱答（score=1, vague）触发深挖追问，<code>reveal</code> 产出带表格的高质量结构化参考答案。
+</div>
+
+<footer>
+  LearnForge · Module Update · Mock / Interview · 2026-06 ·
+  关键文件：<code>agents/mock/director.py</code>（决策）、<code>agents/mock/state.py</code>（持久化）、
+  <code>agents/mock/mock_agent.py</code>（引擎）、<code>agents/mock/interviewer.py</code>（人格+解答）。
+  归属：tech-interview-skill（github.com/Lntanohuang/tech-interview-skill）见 <code>skill_pack/NOTICE.md</code>。
+</footer>
+</div>
+</body>
+</html>

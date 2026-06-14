@@ -48,7 +48,7 @@ Env: `OPENROUTER_API_KEY` enables LLMs (stored only in untracked `.env`). Model 
 | qa | `agents/qa/` | Retrieval-augmented Q&A (Router→Synthesizer→Verifier) | Haiku/Sonnet |
 | diagnose | `agents/diagnosis/` | Read-only weakness detection (ReAct 3-step) | Sonnet |
 | plan | `agents/planning/` | Generate/modify learning paths (incremental PathDiff) | Sonnet |
-| mock | `agents/mock/` | Multi-turn interview (Interviewer/Judge/Strategist/Coach) | Haiku/Sonnet |
+| mock | `agents/mock/` | Multi-turn interview (Director-planned: Interviewer/Judge/Coach) | Haiku/Sonnet/strong |
 | research | `agents/research/` | *not implemented* — first real tool-calling ReAct (read-only) | — |
 | retrieval | `agents/retrieval/` | **shared capability**, not directly scheduled by Manager | Haiku |
 
@@ -102,9 +102,13 @@ Contracts are defined before implementations:
 
 ### LangGraph graphs (`graph/`)
 
-- `main_graph.py`: `START → manager_plan → manager_execute → manager_aggregate → END`.
-- `mock_graph.py`: S1_INIT → S2_INTERVIEWER → S3_AWAIT(interrupt) → S4_JUDGE → S5_STRATEGIST →
-  (loop or S6_COACH → S7_SETTLE → END). `interrupt()` at S3 and S_PAUSE; resume via `Command(resume=...)`.
+- `main_graph.py`: `START → manager_plan → manager_execute → manager_aggregate → END` (thin shell;
+  the real ReAct routing is hand-rolled in `ManagerAgent.execute_dynamic`).
+- **mock has no graph anymore** (2026-06 refactor): the rigid S1–S7 LangGraph subgraph + checkpointer was
+  replaced by an intelligent **`InterviewDirector`** (`agents/mock/director.py`) — one HTTP call = one turn,
+  state persisted to SQLite via `MockStateStore` (`agents/mock/state.py`), next interviewer move chosen
+  per-turn (LLM + deterministic fallback). See `agents/mock/CLAUDE.md`. interrupt/resume is gone; "resume"
+  = reload `MockState` and run another turn.
 
 ### Interview grilling (`agents/mock/interview_skill.py`)
 

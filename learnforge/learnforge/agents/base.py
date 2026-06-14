@@ -85,12 +85,17 @@ class BaseAgent:
         if self.skill is None or not LLM.available:
             return None
         self.require_tool("llm.complete_structured")
+        # 固定 8 层 Prompt Stack（Step B）：Active Skill(SOP+persona) 与 Tool Registry 拆成独立层，
+        # 新增 Project Guide 层；Conversation State / Evidence 进 volatile 尾部。
+        from ..memory.project_guide import project_guide_text
+
         assembled = assemble_prompt(
-            skill=self.skill,
-            constitution=self._skill_constitution(schema),
-            memory_summary=MEMORY.memory_prefix(db_path=getattr(self, "_db_path", None)),
-            retrieved=retrieved,
-            handoff_summary=session,
+            project_guide=project_guide_text(),
+            user_memory=MEMORY.memory_prefix(db_path=getattr(self, "_db_path", None)),
+            active_skill=self._active_skill_layer(),
+            tool_registry=self._tool_registry_layer(schema),
+            conversation_state=session,
+            evidence=retrieved,
             user_input=prompt,
         )
         try:
@@ -199,17 +204,37 @@ class BaseAgent:
             }
         )
 
-    def _skill_constitution(self, schema: Type[BaseModel]) -> str:
-        tool_list = ", ".join(self.skill.spec.allowed_tools) if self.skill else ""
-        steps = " -> ".join(self.skill.workflow()) if self.skill and self.skill.workflow() else "autonomous"
+    def _active_skill_layer(self) -> str:
+        """Active Skill 层 = persona(system_prompt) + 结构化 SOP/能力说明（怎么做事）。
+
+        不含工具清单（那是 Tool Registry 层）。load_instructions 的 sop 段优先用结构化 SOP（Step A）。
+        """
+        if self.skill is None:
+            return ""
+        parts: List[str] = []
+        if self.skill.spec.system_prompt:
+            parts.append(self.skill.spec.system_prompt.strip())
+        instr = self.skill.load_instructions()
+        if instr:
+            parts.append(instr)
+        return "\n\n".join(parts)
+
+    def _tool_registry_layer(self, schema: Type[BaseModel]) -> str:
+        """Tool Registry 层 = 这个 agent 能用什么工具 + 操作边界 + 输出 schema（能用什么，不写怎么做）。"""
+        if self.skill is None:
+            return ""
+        tool_list = ", ".join(self.skill.spec.allowed_tools) or "none"
+        steps = " -> ".join(self.skill.workflow()) if self.skill.workflow() else "autonomous"
         output_name = getattr(schema, "__name__", str(schema))
-        skill_brief = self.skill.load_instructions() if self.skill else ""
-        return (
-            "Agent boundary:\n"
-            f"- agent_id: {self.agent_id.value}\n"
-            f"- allowed_tools: {tool_list or 'none'}\n"
-            f"- operating_mode: decide within this boundary; escalate instead of reaching for unlisted tools\n"
-            f"- preferred_steps: {steps}\n"
-            f"- output_schema: {output_name}\n\n"
-            f"{skill_brief}"
-        )
+        lines = [
+            "Agent boundary:",
+            f"- agent_id: {self.agent_id.value}",
+            f"- allowed_tools: {tool_list}",
+            "- operating_mode: decide within this boundary; escalate instead of reaching for unlisted tools",
+            f"- preferred_steps: {steps}",
+            f"- output_schema: {output_name}",
+        ]
+        if self.skill.spec.tool_descriptions:
+            lines.append("- tool_descriptions:")
+            lines += [f"  - {name}: {desc}" for name, desc in self.skill.spec.tool_descriptions.items()]
+        return "\n".join(lines)

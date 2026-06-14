@@ -11,7 +11,7 @@ LearnForge 是 **orchestrator + tools** 架构。`ManagerAgent`（实现在 `../
 | **qa** | `qa/` | 检索增强问答（Router→Synthesizer→Verifier） | Haiku/Sonnet 混合 |
 | **diagnose** | `diagnosis/` | 只读弱点诊断（ReAct 三段式） | Sonnet |
 | **plan** | `planning/` | 生成/修改学习路径（只产增量 PathDiff） | Sonnet |
-| **mock** | `mock/` | 多轮模拟面试（Interviewer/Judge/Strategist/Coach） | Haiku/Sonnet 混合 |
+| **mock** | `mock/` | 多轮模拟面试（InterviewDirector 智能规划：Interviewer/Judge/Coach） | Haiku/Sonnet/强档 |
 | **research** | `research/` | *未实现* — 首个真 tool-calling ReAct（只读） | — |
 | retrieval | `retrieval/` | **共享能力**，非 Manager 直接调度，被多个工具复用 | Haiku |
 

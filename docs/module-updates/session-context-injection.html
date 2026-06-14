@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnForge · 会话上下文注入（阶段一：补好被丢弃的接线）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#9098a1; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:28px;margin:0 0 8px}
+  h1 .tag{font-size:13px;font-weight:600;color:var(--green);border:1px solid var(--green);
+    border-radius:20px;padding:2px 12px;vertical-align:middle;margin-left:10px}
+  .sub{color:var(--muted);font-size:15px;margin:0}
+  h2{font-size:20px;margin:44px 0 16px;padding-left:12px;border-left:3px solid var(--accent)}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:4px;
+    font-size:13px;color:var(--purple)}
+  .muted{color:var(--muted)}
+  b.grn{color:var(--green)} b.red{color:var(--red)} b.amb{color:var(--amber)}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px 22px;margin:16px 0}
+  .crit{border-color:#5a3a3a;background:rgba(248,81,73,.05)}
+  .crit .lbl{display:inline-block;background:var(--red);color:#160a0a;font-weight:700;
+    font-size:12px;padding:2px 10px;border-radius:6px;margin-bottom:10px}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  .ba .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .ba .card.old{border-color:#5a3a3a}
+  .ba .card.new{border-color:#2e5a3a}
+  .ba h4{margin:0 0 12px;font-size:14px;letter-spacing:.5px;text-transform:uppercase}
+  .ba .old h4{color:var(--red)} .ba .new h4{color:var(--green)}
+  .ba ul{margin:0;padding-left:18px} .ba li{margin:6px 0;font-size:13.5px}
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:24px;overflow-x:auto}
+  .flow pre{margin:0;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--fg);white-space:pre}
+  .flow .c-acc{color:var(--accent)} .flow .c-grn{color:var(--green)}
+  .flow .c-amb{color:var(--amber)} .flow .c-pur{color:var(--purple)}
+  .flow .c-red{color:var(--red)} .flow .c-mut{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:hover td{background:#1b212b}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .pill.rm{color:var(--red);background:rgba(248,81,73,.12)}
+  .pill.add{color:var(--green);background:rgba(63,185,80,.12)}
+  .pill.mod{color:var(--amber);background:rgba(210,153,34,.12)}
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:10px;margin:14px 0;overflow:hidden}
+  .code .bar{background:var(--panel2);padding:6px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .code pre{margin:0;padding:16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:auto;color:#c9d1d9}
+  .k{color:#ff7b72} .s{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .n{color:#79c0ff}
+  .cfg{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin:14px 0}
+  .cfg .item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+  .cfg .item .v{font-family:var(--mono);font-size:20px;color:var(--green);font-weight:700}
+  .cfg .item .name{font-family:var(--mono);font-size:11.5px;color:var(--accent);margin:4px 0 2px;word-break:break-all}
+  .cfg .item .d{font-size:12px;color:var(--muted)}
+  .note{border-left:3px solid var(--amber);background:rgba(210,153,34,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .ok{color:var(--green);font-weight:600}
+  ol li,ul li{margin:7px 0}
+  footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>会话上下文注入 <span class="tag">阶段一 · 已交付</span></h1>
+  <p class="sub">把 <code>pinned / summary / recent</code> 这套已实现却<b class="red">从未进入子 agent prompt</b>的会话记忆，
+  真正接进 QA 的 <code>session</code> 槽；并补上<b>最近调用投影</b>、<b>附件引用</b>、<b>统一预算</b>与<b>诚实面板</b>。</p>
+  <p class="sub muted" style="margin-top:6px">分支 <code>feat/mock-answer-quality</code> ·
+  全离线确定性 · <span class="ok">551 passed / 11 skipped，无回归</span></p>
+</header>
+
+<!-- 0 -->
+<h2>0 · 头条：被丢弃的接线</h2>
+<div class="panel crit">
+  <span class="lbl">关键发现</span>
+  <p style="margin-top:2px;font-size:15.5px"><b>会话记忆机制完整实现，但产物在送进 QA/diagnosis/planning 之前被丢弃。</b>
+  <code>manager_plan</code> 把它读进 <code>state["conversation_summary"]</code> 后，
+  <code>execute_dynamic</code> / <code>dispatch</code> / <code>QAInput</code> 都不消费它——而记忆面板还在<b class="red">谎报「已注入」</b>。</p>
+  <p class="muted">后果：优化 pinned 保留 / summary 稳定性 / 重要性判断，在补好这条接线前对回答质量<b>毫无影响</b>。
+  接线才是承重修复——这正是阶段一只做接线的原因。</p>
+</div>
+
+<div class="flow">
+<pre><span class="c-mut"># 修复前——会话记忆是一段「死状态」</span>
+<span class="c-acc">manager_plan</span>   begin_memory_turn() → state["conversation_summary"]
+     │
+     ▼
+<span class="c-acc">manager_execute</span> → execute_dynamic(user_input, trace_id)
+     │   context = {"composite","trace_id"}        <span class="c-red">← 没带会话记忆</span>
+     ▼
+<span class="c-acc">_dispatch_impl</span> → qa.run(QAInput(question=user_input))   <span class="c-red">← QAInput 无 session 字段</span>
+     │
+     ▼  pinned/summary/recent <span class="c-red">被丢弃</span>；MEMORY_LOG 却记「注入会话摘要」<span class="c-red">（幻影）</span>
+
+
+<span class="c-mut"># 修复后——单一真值 build_session_context 贯穿注入与观测</span>
+<span class="c-acc">execute_dynamic</span>(user_input, trace_id, <span class="c-grn">session_id</span>)
+     │   sctx = build_session_context(session_id)   <span class="c-grn">← 有界装配</span>
+     │   context["session_context"] = sctx.render() <span class="c-grn">+ MEMORY_LOG 记真实 INJECT</span>
+     ▼
+<span class="c-acc">_dispatch_impl</span> → qa.run(QAInput(…, <span class="c-grn">session_context</span>))
+     ▼
+<span class="c-acc">Synthesizer</span>._session_block() → assemble_prompt(<span class="c-grn">session=</span>…) <span class="c-grn">→ 进入 LLM prompt 的 volatile 尾部</span>
+</pre>
+</div>
+
+<!-- 1 -->
+<h2>1 · 装配什么：有界的 session_context（5 段）</h2>
+<p>新增 <code>memory/session_context.py</code>——<b>单一真值</b>装配器：<code>execute_dynamic</code> 注入用它，
+记忆面板 <code>prompt_load_overview</code> 报告也用它，两边不再各算一套。纯读、离线安全、Manager 不写。</p>
+<table>
+  <thead><tr><th>段</th><th>来源</th><th>作用</th><th>预算(tok)</th></tr></thead>
+  <tbody>
+    <tr><td><code>pinned</code> 重要结果·固定</td><td><code>session_state.active_task.pinned</code></td><td>诊断/计划/mock 复盘/简历结论跨轮可引用</td><td>700</td></tr>
+    <tr><td><code>summary</code> 早期会话摘要</td><td><code>session_state.summary</code></td><td>compaction 折叠出的早期背景</td><td>300</td></tr>
+    <tr><td><code>recent</code> 最近对话</td><td><code>session_state.recent_messages</code></td><td>最近原文轮</td><td>400</td></tr>
+    <tr><td><code>tools</code> 最近调用 <span class="pill add">新</span></td><td><code>dialogue_turns.recent()</code> 的 tool_calls</td><td>知道最近调过哪些子 agent（启用了此前定义却<b>从未被调用</b>的加载器）</td><td>120</td></tr>
+    <tr><td><code>attachments</code> 可引用附件 <span class="pill add">新</span></td><td><code>dialogue_turns</code> artifacts</td><td>文件名 + <code>document_id</code>，供「刚才那个文件」跨轮定位</td><td>160</td></tr>
+  </tbody>
+</table>
+<div class="note">刻意只取 agent 名 / 文件引用，<b>不把完整 trace 原文无脑塞进 prompt</b>——轻量信号即可让后续回答「知道最近做过什么」。</div>
+
+<!-- 2 -->
+<h2>2 · 预算：pinned 绝不全文无上限注入</h2>
+<p>每段先按各自上限 <code>truncate_to_tokens</code> 裁断，整段再加一道全局天花板。常量经 <code>config</code> 模块在调用时读取——
+env 可覆盖、测试可 monkeypatch（修复期发现 from-import 绑定会让覆盖失效，已改为模块引用）。</p>
+<div class="cfg">
+  <div class="item"><div class="v">1600</div><div class="name">SESSION_CONTEXT_MAX_TOKENS</div><div class="d">全局天花板（env 可调）</div></div>
+  <div class="item"><div class="v">700</div><div class="name">..._PINNED_TOKENS</div><div class="d">重要结果优先级最高</div></div>
+  <div class="item"><div class="v">300</div><div class="name">..._SUMMARY_TOKENS</div><div class="d">早期摘要</div></div>
+  <div class="item"><div class="v">400</div><div class="name">..._RECENT_TOKENS</div><div class="d">最近原文</div></div>
+  <div class="item"><div class="v">120</div><div class="name">..._TOOLS_TOKENS</div><div class="d">调用投影</div></div>
+  <div class="item"><div class="v">160</div><div class="name">..._ATTACH_TOKENS</div><div class="d">附件引用</div></div>
+  <div class="item"><div class="v">6</div><div class="name">..._RECENT_ROUNDS</div><div class="d">投影/附件扫描轮数</div></div>
+</div>
+
+<!-- 3 -->
+<h2>3 · 接线 & 注入</h2>
+<div class="ba">
+  <div class="card old">
+    <h4>✗ 修复前</h4>
+    <ul>
+      <li><code>execute_dynamic(user_input, trace_id)</code> 不知道 session_id</li>
+      <li><code>QAInput</code> 无 session/history 字段</li>
+      <li>Synthesizer 的 <code>session=</code> 槽只放 project_context</li>
+      <li>面板：笼统一个「会话」段，且谎报已注入</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>✓ 修复后</h4>
+    <ul>
+      <li><code>execute_dynamic(…, session_id)</code> 装配并注入 <code>context["session_context"]</code></li>
+      <li><code>QAInput.session_context</code> → <code>SynthesizerInput</code> → <code>_session_block()</code></li>
+      <li>注入 assembler 的 <b>volatile 尾部</b>（缓存边界之后，不破坏 KV-cache prefix §6c）</li>
+      <li>面板逐段（pinned/recent…）报真实 token；真实 INJECT 在注入点记录</li>
+    </ul>
+  </div>
+</div>
+<div class="code">
+  <div class="bar">learnforge/orchestration/manager.py · build_session_context（真实注入点）</div>
+<pre><span class="k">def</span> <span class="fn">build_session_context</span>(<span class="n">self</span>, session_id):
+    sctx = <span class="fn">_build</span>(session_id, db_path=<span class="n">self</span>._db_path)
+    <span class="k">if</span> sctx.<span class="fn">is_empty</span>(): <span class="k">return</span> <span class="s">""</span>          <span class="cm"># 无历史 → 不渲染、不谎报注入</span>
+    MEMORY_LOG.<span class="fn">record</span>(INJECT, <span class="s">"注入会话上下文"</span>,
+        <span class="s">f"{sctx.total_tokens()} tokens / {len(sctx.sections)} 段…"</span>, count=<span class="n">1</span>)
+    <span class="k">return</span> sctx.<span class="fn">render</span>()                       <span class="cm"># 整体再过一道全局预算天花板</span></pre>
+</div>
+
+<!-- 4 -->
+<h2>4 · 可观测性诚实化（§7）</h2>
+<ul>
+  <li><span class="pill rm">移除</span> <code>load_session_memory</code> 里的幻影 <code>注入会话摘要</code> 日志——它声称的注入从未发生。</li>
+  <li><span class="pill add">新增</span> 真实 <code>INJECT</code> 记录在 <code>build_session_context</code>（即实际进 prompt 的那一刻）。</li>
+  <li><span class="pill mod">改写</span> <code>prompt_load_overview</code> 复用<b>同一个</b>装配器，逐段输出 <code>session:pinned / session:recent / …</code> 及各自真实 token，不再笼统报一段、不再展示未进 prompt 的来源。</li>
+</ul>
+
+<!-- 5 -->
+<h2>5 · 测试（回归守卫）</h2>
+<p>新增 <code>tests/test_phase1_session_context.py</code>（8 例），全离线：</p>
+<table>
+  <thead><tr><th>用例</th><th>守护什么</th></tr></thead>
+  <tbody>
+    <tr><td>build_session_context_includes_…</td><td>pinned/summary/recent 装配齐全</td></tr>
+    <tr><td><b class="grn">pinned_survives_compaction_and_reaches_context</b></td><td>compaction 后重要诊断结论仍在装配结果里</td></tr>
+    <tr><td><b class="grn">session_context_reaches_qa_input</b></td><td>spy <code>qa.run</code>：会话上下文确实抵达 <code>QAInput</code>——头条 bug 的直接守卫</td></tr>
+    <tr><td>session_context_reaches_synthesizer_prompt</td><td>经 <code>_session_block</code>→<code>assemble_prompt</code> 进入 LLM 串的 volatile 尾部，且不污染缓存 prefix</td></tr>
+    <tr><td>recent_projection_reflects_called_agents_…</td><td>最近子 agent + 附件文件名/document_id 浮现</td></tr>
+    <tr><td>session_context_budget_bounded</td><td>对抗性超长输入下总 token 不超天花板</td></tr>
+    <tr><td>empty_session_no_phantom_injection</td><td>无历史 → 不渲染、面板无 session 来源（诚实）</td></tr>
+    <tr><td>panel_reports_real_sections_with_tokens</td><td>有历史 → 面板逐段报真实 token</td></tr>
+  </tbody>
+</table>
+<p class="muted">另更新 <code>test_memory_log_panel.py</code>：断言<b>诚实</b>流水线——<code>begin_memory_turn</code> 注入稳定记忆（READ 会话），
+会话上下文的真实注入发生在 <code>build_session_context</code>。</p>
+
+<!-- 6 -->
+<h2>6 · 改动文件</h2>
+<table>
+  <thead><tr><th>文件</th><th>变更</th></tr></thead>
+  <tbody>
+    <tr><td><code>memory/session_context.py</code></td><td><span class="pill add">新建</span> 有界装配器（单一真值）</td></tr>
+    <tr><td><code>orchestration/manager.py</code></td><td>build_session_context；execute_dynamic/plan_execute/run_active_mock/handle 接线；去幻影日志</td></tr>
+    <tr><td><code>orchestration/graph/nodes.py</code></td><td>把 <code>session_id</code> 传进 execute_dynamic</td></tr>
+    <tr><td><code>contracts/agents/qa.py</code></td><td>QAInput / SynthesizerInput 加 <code>session_context</code></td></tr>
+    <tr><td><code>agents/qa/qa_agent.py</code></td><td>3 处 SynthesizerInput 透传 session_context</td></tr>
+    <tr><td><code>agents/qa/synthesizer.py</code></td><td>抽出可测的 <code>_session_block()</code>（project + session 合并）</td></tr>
+    <tr><td><code>memory/log.py</code></td><td>prompt_load_overview 复用装配器、逐段报 token</td></tr>
+    <tr><td><code>config.py</code></td><td>7 个 <code>SESSION_CONTEXT_*</code> 预算常量</td></tr>
+    <tr><td><code>tests/test_phase1_session_context.py</code></td><td><span class="pill add">新建</span> 8 例回归</td></tr>
+  </tbody>
+</table>
+
+<!-- 7 -->
+<h2>7 · 不变量 & 边界</h2>
+<ul>
+  <li><b class="grn">Manager 仍是唯一写者</b>——新模块只读已落库的会话记忆，不写任何状态。</li>
+  <li><b class="grn">Diagnosis 仍只读</b>，未触碰。</li>
+  <li><b class="grn">无 key 离线可用</b>——装配器无历史时降级为空串，QA 照常作答。</li>
+  <li><b class="amb">刻意留给后续阶段</b>：重要性判断扩展（#3）、pinned 稳健性、summary 重摘策略、<b>跨轮附件「召回」</b>（本阶段只到「引用 document_id」，不拉全文）——均属阶段二/三/四。</li>
+</ul>
+
+<footer>
+  LearnForge · module-updates / session-context-injection · 阶段一（接线优先）<br>
+  相关：<code>docs/module-updates/context-compaction.html</code>（pinned/compaction 机制本身） ·
+  <code>docs/context-pipeline-review.html</code>（七问审查全文）
+</footer>
+
+</div>
+</body>
+</html>

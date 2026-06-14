@@ -8,14 +8,35 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
+from ...config import mock_answer_model
 from ...contracts.agents.mock import InterviewerInput, InterviewerOutput
 from ...contracts.agents.retrieval import RetrievalInput
-from ...contracts.enums import AgentId, KnowledgeScope, RetrievalMethod
+from ...contracts.enums import AgentId, InterviewPhase, KnowledgeScope, RetrievalMethod
+from . import control as CTRL
 from . import interview_skill as IS
 from ..base import BaseAgent
 from ..retrieval import RetrievalAgent
 
 logger = logging.getLogger(__name__)
+
+
+def _answer_model():
+    """高质量生成（出题/解答）的模型覆盖；None → 用 skill 的 model_tier（SONNET）。"""
+    return mock_answer_model()
+
+
+# 环节 → 出题侧重（接入 tech-interview skill 三环节）。
+_PHASE_BRIEF = {
+    InterviewPhase.BASICS.value: "当前环节=基础知识：考简历技术栈的基础概念，由浅入深、可对比辨析。",
+    InterviewPhase.PROJECT.value: "当前环节=项目深挖：围绕简历核心项目追问架构决策/技术难点/个人贡献/权衡取舍。",
+    InterviewPhase.SYSTEM_DESIGN.value: "当前环节=系统设计/编码：按资历给设计题或编码题，引导思考不直接给答案。",
+}
+# 出题模式 → 指令。
+_MODE_BRIEF = {
+    "followup": "模式=追问深挖：紧扣候选人上一轮回答里最薄弱/最含糊的点继续逼问，不要换新话题。",
+    "probe": "模式=简历诚信点破：候选人答不出简历/项目写的内容细节，直接指出差距并给更真实的表述建议。",
+    "ask": "模式=出新题。",
+}
 
 
 class InterviewerAgent(BaseAgent):
@@ -63,13 +84,17 @@ class InterviewerAgent(BaseAgent):
             evidence = f"{evidence}\n{materials}"
         prompt = (
             f"主题：{payload.topic}\n难度(1-5)：{payload.difficulty}\n"
+            f"{self._phase_brief(payload)}"
             f"已问过（勿重复）：{asked or '无'}\n参考资料：\n{evidence}\n"
+            f"{self._bank_brief(payload)}"
             f"{self._grilling_brief(payload)}"
             "出一道该难度的面试题/追问，给出考点 expected_points 与相关 atom_refs。"
         )
+        # 出题走可配置强档（mock_answer_model 覆盖；None → skill 的 SONNET 档）——保证题目质量。
         # max_tokens 提到 768：题目 + expected_points + atom_refs 的 JSON 在 512 下偶尔截断，
         # 截断 → 解析失败 → llm_structured 返回 None → 静默退化到模板题。
-        out = self.llm_structured(prompt, InterviewerOutput, max_tokens=768)
+        out = self.llm_structured(prompt, InterviewerOutput, max_tokens=768,
+                                  model=_answer_model())
         if out is not None and out.question:
             return out
 
@@ -108,6 +133,79 @@ class InterviewerAgent(BaseAgent):
             if risks:
                 lines.append(f"上一轮风险：{risks}（针对风险点追问证据/降级表达）")
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _phase_brief(payload: InterviewerInput) -> str:
+        """环节 + 模式提示（接入 tech-interview skill 三环节 + 追问/点破模式）。"""
+        bits = []
+        if payload.phase and payload.phase in _PHASE_BRIEF:
+            bits.append(_PHASE_BRIEF[payload.phase])
+        mode = payload.mode or "ask"
+        if mode in _MODE_BRIEF and mode != "ask":
+            bits.append(_MODE_BRIEF[mode])
+        return ("\n".join(bits) + "\n") if bits else ""
+
+    def _bank_brief(self, payload: InterviewerInput) -> str:
+        """高频题库切片（按 role/topic 召回，作 few-shot 参考，不照抄）。"""
+        role = self._role_type(payload)
+        bank = IS.load_question_patterns(role_type=role, topic=payload.topic, limit=3)
+        if not bank:
+            return ""
+        lines = [f"- {b['q']}（难度{b.get('difficulty')}）" for b in bank]
+        return "高频题参考（可改编，勿照抄、勿超难度）：\n" + "\n".join(lines) + "\n"
+
+    def explain(self, kind: str, question: str, expected_points: Optional[List[str]] = None,
+                user_answer: Optional[str] = None, role_type: Optional[str] = None) -> str:
+        """高质量"面试解答/提示/纠错"——双角色切换（面试官↔导师），强模型生成。
+
+        kind ∈ {hint, reveal, correct}。无 key → 退回 control.py 的确定性文案（链路永远通）。
+        接入 tech-interview skill 的双角色格式：`---` + 💡面试官提示 + `---`。
+        """
+        expected_points = expected_points or []
+        from ...llm.client import LLM
+
+        if not LLM.available or self.skill is None:
+            return self._explain_fallback(kind, question, expected_points, user_answer)
+        try:
+            self.require_tool("llm.complete")
+            instr = {
+                "hint": "给候选人提示但**不要给出完整答案**：点出 1-2 个思考方向，逼他自己组织。",
+                "reveal": "公布高质量参考答案：准确、有深度、点出关键权衡与常见误区，像资深面试官会认可的回答。",
+                "correct": ("候选人回答有技术错误。先简短指出错在哪、为什么错，再给出正确且有深度的解释，"
+                            "最后一句建议怎么真正理解它。"),
+            }.get(kind, "给一个简洁有深度的说明。")
+            prompt = (
+                f"面试题：{question}\n考点：{expected_points or '（无）'}\n"
+                f"候选人回答：{user_answer or '（未作答）'}\n目标角色：{role_type or '通用'}\n\n"
+                f"任务：{instr}\n"
+                "用 tech-interview 面试官的双角色格式输出（中文、直接、不留情、不空泛）：\n"
+                "用一行 `---` 开头，第二行写 `💡 **面试官提示**`，正文给出内容，最后再用一行 `---` 收尾。"
+            )
+            resp = LLM.complete(
+                prompt, model_tier=self.skill.spec.model_tier,
+                system=self.skill.spec.system_prompt, max_tokens=700, model=_answer_model(),
+            )
+            txt = (getattr(resp, "text", "") or "").strip()
+            if txt:
+                return txt
+        except Exception:  # noqa: BLE001 - 解答失败不阻断面试，退回确定性文案
+            pass
+        return self._explain_fallback(kind, question, expected_points, user_answer)
+
+    @staticmethod
+    def _explain_fallback(kind: str, question: str, expected_points: List[str],
+                          user_answer: Optional[str]) -> str:
+        """无 LLM 兜底：复用 control.py 的确定性文案，包成双角色格式。"""
+        if kind == "hint":
+            body = CTRL.build_hint(question, expected_points)
+        elif kind == "correct":
+            safer = IS.downgrade(user_answer)
+            body = CTRL.build_reveal(question, expected_points)
+            if safer:
+                body += f"\n（你刚才的表述偏夸大，建议降级为「{safer}」更真实。）"
+        else:  # reveal
+            body = CTRL.build_reveal(question, expected_points)
+        return f"---\n💡 **面试官提示**\n{body}\n---"
 
     def _fallback_question(self, payload: InterviewerInput, atom_refs: List[str]) -> InterviewerOutput:
         ctx = payload.context

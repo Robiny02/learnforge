@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LearnForge · Agent 架构：我们怎么自己搭了一个 orchestrator（以及拿什么替代了 LangGraph）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#9098a1; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:27px;margin:0 0 8px;line-height:1.3}
+  h1 .tag{font-size:13px;font-weight:600;color:var(--green);border:1px solid var(--green);
+    border-radius:20px;padding:2px 12px;vertical-align:middle;margin-left:10px}
+  .sub{color:var(--muted);font-size:15px;margin:0}
+  h2{font-size:20px;margin:46px 0 16px;padding-left:12px;border-left:3px solid var(--accent)}
+  h3{font-size:16px;margin:24px 0 10px;color:var(--accent)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:4px;
+    font-size:13px;color:var(--purple)}
+  .muted{color:var(--muted)} b.grn{color:var(--green)} b.red{color:var(--red)} b.amb{color:var(--amber)} b.acc{color:var(--accent)} b.pur{color:var(--purple)}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+  .ba .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .ba .card.old{border-color:#5a3a3a} .ba .card.new{border-color:#2e5a3a}
+  .ba h4{margin:0 0 10px;font-size:13px;letter-spacing:.5px;text-transform:uppercase}
+  .ba .old h4{color:var(--red)} .ba .new h4{color:var(--green)}
+  .ba ul{margin:0;padding-left:18px} .ba li{margin:6px 0;font-size:13px}
+  .stack{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  .stack .row{display:flex;align-items:center;gap:10px;padding:3px 0}
+  .stack .n{width:20px;color:var(--muted);text-align:right}
+  .stack .nm{flex:0 0 210px;color:var(--fg)}
+  .stack .d{color:var(--muted)}
+  .stack .pfx{color:var(--green)} .stack .vol{color:var(--amber)}
+  .stack .hd{color:var(--muted);font-size:11px;letter-spacing:.5px;margin:8px 0 2px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  td code{white-space:nowrap}
+  tr:hover td{background:#1b212b}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .pill.add{color:var(--green);background:rgba(63,185,80,.12)}
+  .pill.mod{color:var(--amber);background:rgba(210,153,34,.12)}
+  .pill.rm{color:var(--red);background:rgba(248,81,73,.12)}
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:10px;margin:14px 0;overflow:hidden}
+  .code .bar{background:var(--panel2);padding:6px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .code pre{margin:0;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:auto;color:#c9d1d9;white-space:pre}
+  .k{color:#ff7b72} .s{color:#a5d6ff} .cm{color:#8b949e;font-style:italic} .fn{color:#d2a8ff} .nm2{color:#79c0ff}
+  .note{border-left:3px solid var(--amber);background:rgba(210,153,34,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .keypt{border-left:3px solid var(--green);background:rgba(63,185,80,.06);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;font-size:13.5px}
+  .ok{color:var(--green);font-weight:600}
+  .flow{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:20px;margin:16px 0;font-family:var(--mono);font-size:12.5px;text-align:center;line-height:2.2;overflow-x:auto}
+  .flow .box{display:inline-block;border:1px solid var(--accent);border-radius:6px;padding:4px 12px;color:var(--accent);margin:0 2px}
+  .flow .box.w{border-color:var(--green);color:var(--green)}
+  .flow .box.t{border-color:var(--purple);color:var(--purple)}
+  .flow .arr{color:var(--muted);margin:0 4px}
+  .flow .loop{color:var(--amber)}
+  ul.tight{margin:8px 0;padding-left:22px} ul.tight li{margin:5px 0}
+  .toc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 22px;margin:20px 0;font-size:13.5px;columns:2;column-gap:32px}
+  .toc a{color:var(--accent);text-decoration:none;display:block;padding:3px 0}
+  .toc a:hover{text-decoration:underline}
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>LearnForge · Agent 架构<span class="tag">orchestrator + tools</span></h1>
+  <p class="sub">我们怎么「自己搭」了一个多 agent 系统 —— 以及到底拿什么替代了 LangGraph。</p>
+</header>
+
+<div class="keypt">
+<b>一句话结论：</b>LangGraph 没被整个扔掉，但它<b class="grn">被降级成一层很薄的线性外壳</b>（<code>START → plan → execute → aggregate → END</code>，3 个节点直线连）。
+真正的「agent 大脑」—— 路由、分支、重规划、ReAct 循环、唯一写者 —— 全部在 <code>ManagerAgent</code> 里用<b class="acc">纯 Python 手搓</b>。
+换句话说：<b class="amb">LangGraph 的条件边 DAG 被一个手写的 <code>decide → dispatch → apply</code> while 循环替代了</b>，并且这个循环在没有 API key 时有完全确定性的兜底（“链路永远通”）。
+</div>
+
+<div class="toc">
+  <a href="#two-layers">1 · 两层：薄图壳 vs 手搓大脑</a>
+  <a href="#orchestrator">2 · 编排者：agent-as-tool</a>
+  <a href="#react">3 · 替代 LangGraph 的核心：手搓 ReAct 循环</a>
+  <a href="#decide">4 · decide_next：LLM 选下一步 + 确定性兜底</a>
+  <a href="#modes">5 · 两种编排模式（动态 vs plan-as-tool-calls）</a>
+  <a href="#tools">6 · 工具层：BaseAgent + Skill 权限门</a>
+  <a href="#toolcall">7 · 真·tool-calling ReAct（react/loop.py）</a>
+  <a href="#prompt">8 · 固定 8 层 Prompt Stack</a>
+  <a href="#state">9 · 状态不放在图里，放在 SQLite</a>
+  <a href="#why">10 · 为什么这么搭</a>
+</div>
+
+<h2 id="two-layers">1 · 两层：薄图壳 vs 手搓大脑</h2>
+<p>很多人以为「LangGraph 项目 = 用 LangGraph 的 StateGraph 画一张带条件边的状态机」。LearnForge 反过来：</p>
+<div class="ba">
+  <div class="card old">
+    <h4>典型 LangGraph 写法（我们没这么干）</h4>
+    <ul>
+      <li>每个能力一个 node</li>
+      <li><code>add_conditional_edges()</code> 把路由逻辑写进图的边</li>
+      <li>replan / 分支 = 更多节点 + 更多条件边</li>
+      <li>状态靠 LangGraph 的 checkpointer 持久化</li>
+      <li>“下一步去哪”由图的拓扑决定</li>
+    </ul>
+  </div>
+  <div class="card new">
+    <h4>LearnForge 实际写法</h4>
+    <ul>
+      <li>主图只有 <b class="grn">3 个节点、直线连</b>，没有一条条件边</li>
+      <li>路由 / 分支 / replan 全在 <code>manager_execute</code> 这一个节点<b class="grn">内部用 Python 循环</b>跑完</li>
+      <li>“下一步去哪”由 <code>ManagerAgent.decide_next()</code> 决定，<b class="grn">不由图决定</b></li>
+      <li>状态放 <b class="grn">SQLite</b>（<code>dialogue_turns</code> / <code>session_state</code>），不靠图的 checkpointer</li>
+      <li>LangGraph 仅作 substrate（编译/调用入口）+ mock 子图的 interrupt/resume</li>
+    </ul>
+  </div>
+</div>
+
+<div class="code">
+  <div class="bar">orchestration/graph/main_graph.py — 整张主图就这么大</div>
+<pre><span class="k">def</span> <span class="fn">build_main_graph</span>() -&gt; StateGraph:
+    g = <span class="fn">StateGraph</span>(MainState)
+    g.<span class="fn">add_node</span>(N.N_PLAN,      N.manager_plan)       <span class="cm"># 只做记忆读取</span>
+    g.<span class="fn">add_node</span>(N.N_EXECUTE,   N.manager_execute)    <span class="cm"># ← ReAct 循环全在这里</span>
+    g.<span class="fn">add_node</span>(N.N_AGGREGATE, N.manager_aggregate)  <span class="cm"># 聚合成给用户的回复</span>
+    g.<span class="fn">add_edge</span>(START,        N.N_PLAN)
+    g.<span class="fn">add_edge</span>(N.N_PLAN,     N.N_EXECUTE)    <span class="cm"># 直线，没有 add_conditional_edges</span>
+    g.<span class="fn">add_edge</span>(N.N_EXECUTE,  N.N_AGGREGATE)
+    g.<span class="fn">add_edge</span>(N.N_AGGREGATE, END)
+    <span class="k">return</span> g</pre>
+</div>
+<p class="muted">→ 图本身不做任何决策。它只是「读记忆 → 干活 → 收尾」的三段壳。所有智能都被推进了中间那个节点。</p>
+
+<h2 id="orchestrator">2 · 编排者：agent-as-tool</h2>
+<p>架构范式是 <b>orchestrator + tools</b>：一个主 agent 规划并派发，每个域能力是它调用的一个<b>工具</b>（agent-as-tool）。</p>
+<div class="flow">
+  <span class="box">ManagerAgent</span><span class="muted"> （唯一编排者 + 唯一写者）</span><br>
+  <span class="arr">└─ 把每个能力当 tool 调用 ─┐</span><br>
+  <span class="box w">qa</span> <span class="box w">diagnose</span> <span class="box w">plan</span> <span class="box w">mock</span> <span class="muted">（+ 共享 retrieval）</span>
+</div>
+<table>
+  <thead><tr><th>工具</th><th>角色</th><th>内部子步骤（不是独立工具）</th></tr></thead>
+  <tbody>
+    <tr><td><code>qa</code></td><td>检索增强问答</td><td>Router → Retrieval → Synthesizer → Verifier</td></tr>
+    <tr><td><code>diagnose</code></td><td>只读弱点诊断</td><td>ReAct 三段式（thought→action→observation）</td></tr>
+    <tr><td><code>plan</code></td><td>生成/修改学习路径</td><td>只产增量 <code>PathDiff</code>，由 Manager 落库</td></tr>
+    <tr><td><code>mock</code></td><td>多轮模拟面试</td><td>Interviewer / Judge / Strategist / Coach</td></tr>
+  </tbody>
+</table>
+<div class="note">
+<b>命名纪律：</b>这<b>不是</b>「13-agent 系统」。Router / Synthesizer / Judge / Coach 是<b>工具内部的子步骤</b>，对外只有上面 4 个工具。
+关键不变量：<b class="amb">Manager 是唯一写者</b> —— 只有它写 <code>knowledge_atoms</code> 掌握度和 <code>learning_paths</code>；DiagnosisAgent 严格只读（有测试守护）。
+</div>
+
+<h2 id="react">3 · 替代 LangGraph 的核心：手搓 ReAct 循环</h2>
+<p>这是整篇文档的重点。LangGraph 用条件边在节点间跳转来实现「看结果决定下一步」；LearnForge 把这件事换成了
+<code>ManagerAgent.execute_dynamic()</code> 里一个朴素的 <b class="acc">for 循环</b>。Manager 不预先拆死一张 DAG，而是<b>每一步看子 agent 的结果，再决定下一步</b>。</p>
+
+<div class="flow">
+<span class="loop">┌──────────── for _ in range(max_steps) ────────────┐</span><br>
+<span class="loop">│</span>  <span class="box">decide_next()</span> <span class="arr">→</span> <span class="box t">dispatch(agent)</span> <span class="arr">→</span> <span class="box w">_apply_step()</span>  <span class="loop">│</span><br>
+<span class="loop">│</span>  <span class="muted">选下一个子 agent</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="muted">派给域 worker</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="muted">善后/唯一写者落库</span>  <span class="loop">│</span><br>
+<span class="loop">└────────── 直到 next == "finish" / 预算用尽 ─────────┘</span>
+</div>
+
+<div class="code">
+  <div class="bar">orchestration/manager.py — execute_dynamic()（精简）</div>
+<pre>done, responses = [], []
+<span class="k">for</span> _ <span class="k">in</span> <span class="fn">range</span>(max_steps):
+    nxt = self.<span class="fn">decide_next</span>(user_input, done, responses, context)
+    <span class="k">if</span> nxt == <span class="s">"finish"</span>: <span class="k">break</span>
+    <span class="k">if</span> nxt <span class="k">in</span> done:  <span class="k">break</span>            <span class="cm"># 防止反复调同一个 agent 死循环</span>
+
+    <span class="cm"># §5.6 异常①：要改计划但诊断为空 → 跳过，改建议先 mock</span>
+    <span class="k">if</span> nxt == <span class="s">"planning"</span> <span class="k">and</span> <span class="fn">_is_empty_diagnosis</span>(context.get(<span class="s">"diagnosis"</span>, {})):
+        meta[<span class="s">"suggest_mock"</span>] = <span class="k">True</span>; done.<span class="fn">append</span>(<span class="s">"planning"</span>); <span class="k">continue</span>
+
+    resp = self.<span class="fn">dispatch</span>(nxt, user_input, context, trace_id)  <span class="cm"># 派给 worker</span>
+    self.<span class="fn">_apply_step</span>(nxt, resp, context, meta, trace_id)     <span class="cm"># 唯一写者在此落库</span>
+    done.<span class="fn">append</span>(nxt); responses.<span class="fn">append</span>(resp)
+
+    <span class="cm"># 早停：qa 是叶子能力，答完即终态，省一次 decide_next 往返</span>
+    <span class="k">if</span> nxt == <span class="s">"qa"</span> <span class="k">and</span> resp.status == Status.OK: <span class="k">break</span></pre>
+</div>
+
+<div class="keypt">
+这就是「自己搭 agent」最实在的含义：<b>编排逻辑是普通 Python 控制流</b>（for / if / break / continue），
+而不是一张需要你脑补拓扑的图。复合任务「诊断 → 改路径 → 建议 mock」是这个循环<b>自然续跑</b>出来的，没有为它单独连边。
+</div>
+
+<h2 id="decide">4 · decide_next：LLM 选下一步 + 确定性兜底</h2>
+<p>循环每一步的「下一步去哪」由 <code>decide_next()</code> 回答。它把<b>受限动作空间</b><code>{qa, planning, diagnosis, mock, finish}</code> 喂给一个便宜模型，
+让它只输出一个 2 字段的 <code>NextStep</code>。关键设计：</p>
+<ul class="tight">
+  <li><b>动作空间受限且安全</b>：模型只能从 5 个里选一个，选错/解析失败一律落到确定性兜底。</li>
+  <li><b>喂「为什么」而不只是结论</b>：把每个子工具的 <code>reason</code>（依据/缺口/降级，如「diagnosis 信号不足」「qa 降级无证据」）一起喂给 replan，让它看到结论<i>背后</i>的理由。</li>
+  <li><b>护栏防过早 finish</b>：弱模型常在 diagnosis 后就想收尾；如果用户明确要学习计划，planning 跑之前不允许 finish。</li>
+  <li><b class="grn">无 LLM 时完全确定性</b>：<code>LLM.available == False</code> → 走 <code>_fallback_next()</code>，用关键词先验复刻「看结果选下一步」的直觉。这就是「链路永远通」——所有测试可离线跑。</li>
+</ul>
+
+<div class="ba">
+  <div class="card">
+    <h4 style="color:var(--accent)">在线（有 key）</h4>
+    <ul>
+      <li>LLM 输出 <code>NextStep.next_agent</code></li>
+      <li>非法值 → 落兜底</li>
+      <li>首步不允许直接 finish（防空转）</li>
+      <li>护栏拦「计划没跑就 finish」</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4 style="color:var(--green)">离线（无 key）</h4>
+    <ul>
+      <li><code>_fallback_next()</code> 关键词路由</li>
+      <li>复合「准备面试」：diagnosis → planning → finish</li>
+      <li>单意图：首步按关键词，完成即 finish</li>
+      <li>确定、可回归、零成本</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="modes">5 · 两种编排模式</h2>
+<p>Manager 按意图分两条编排路径，写入口统一收口在 <code>dispatch</code> / <code>_apply_step</code>（唯一写者不变）：</p>
+<table>
+  <thead><tr><th>模式</th><th>触发</th><th>怎么走</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b class="acc">动态 ReAct</b><br><span class="muted">execute_dynamic</span></td>
+      <td>单意图（问个概念、单独诊断…）</td>
+      <td>每步 <code>decide_next</code> 实时选下一个 agent，看结果再决定。叶子能力（qa）答完即停。</td>
+    </tr>
+    <tr>
+      <td><b class="pur">plan-as-tool-calls</b><br><span class="muted">planner.build_plan</span></td>
+      <td>复合意图（“快面试了帮我准备一下”）</td>
+      <td>先 <code>create</code> 一个<b>显式、可检视、可标记</b>的有序步骤计划（每步选一个子 agent），执行器逐步 dispatch + <code>mark_step=completed</code>。已知复合用确定性拆解，可回归。</td>
+    </tr>
+  </tbody>
+</table>
+<p class="muted">两种模式都不依赖 LangGraph 的边 —— 一个是 Python 循环，一个是 Python 遍历一个 plan 对象。LangGraph 自始至终只负责把这一切包在 <code>manager_execute</code> 节点里调用一次。</p>
+
+<h2 id="tools">6 · 工具层：BaseAgent + Skill 权限门</h2>
+<p>每个工具继承 <code>BaseAgent</code>，并从 <code>SkillRegistry</code> 取自己的 <b>Skill</b>（运行时人格）。这让每个子 agent 更像 Claude Code 的 subagent：职责、上下文、可用工具都由 skill <b>声明</b>，而非外层 workflow 默许。</p>
+<p>每个工具 = <b>三层</b>，刻意分开：</p>
+<table>
+  <thead><tr><th>层</th><th>是什么</th><th>在哪</th></tr></thead>
+  <tbody>
+    <tr><td><b>契约</b></td><td>Input/Output Pydantic = 工具 schema</td><td><code>contracts/agents/&lt;tool&gt;.py</code></td></tr>
+    <tr><td><b>运行时人格</b></td><td>system_prompt + 工具权限 + model_tier</td><td><code>skills/definitions/__init__.py</code></td></tr>
+    <tr><td><b>工程文档</b></td><td>职责/不变量/降级/坑</td><td>各目录 <code>CLAUDE.md</code>（≠ system prompt）</td></tr>
+  </tbody>
+</table>
+<div class="code">
+  <div class="bar">agents/base.py — 运行期权限门禁（require_tool）</div>
+<pre><span class="k">def</span> <span class="fn">require_tool</span>(self, tool_name):
+    <span class="cm"># subagent 未被 skill 授权 → 直接阻断，不靠外层默许</span>
+    <span class="k">if</span> <span class="k">not</span> self.<span class="fn">has_tool</span>(tool_name):
+        <span class="k">raise</span> <span class="fn">SkillPermissionError</span>(
+            <span class="s">f"Agent '</span>{self.agent_id}<span class="s">' skill is not allowed to use '</span>{tool_name}<span class="s">'."</span>)</pre>
+</div>
+<p class="muted">写工具不会出现在只读 agent 的工具表里 —— 这就是 DiagnosisAgent「严格只读」在运行期被强制的方式。</p>
+
+<h2 id="toolcall">7 · 真·tool-calling ReAct（react/loop.py）</h2>
+<p>除了 Manager 那层「选哪个子 agent」的编排循环，工具<b>内部</b>还有一个真正的 OpenAI 兼容 tool-calling 循环 <code>ReactRunner</code>：维护对话 <code>messages</code> → 模型吐 <code>tool_calls</code> → 逐个过权限门 + 执行 → 结果作为 <code>role=tool</code> 回灌 → 再问模型，直到它不再调工具就给最终答案。</p>
+<div class="flow">
+<span class="box">think</span><span class="arr">→</span><span class="box t">tool_call</span><span class="arr">→</span><span class="fn" style="color:var(--green)">observe (role=tool 回灌)</span><span class="arr">↺</span><span class="muted">无 tool_calls → 最终文本</span>
+</div>
+<ul class="tight">
+  <li>只暴露 <code>skill.allows(name)</code> ∧ 有 handler 的工具，越权 → error tool_result（不崩溃）。</li>
+  <li>没有 tool_calls 时直接返回 → 这就是「简单问题快答」路径（模型不调工具直接答）。</li>
+  <li>超 <code>max_steps</code> → 再要一次「基于已观察直接给最终答复」，安全收尾并标 <code>degraded</code>。</li>
+</ul>
+<p class="muted">注意区分两个「ReAct」：<b>Manager 的 ReAct</b> 是「选下一个子 agent」的编排循环；<b>ReactRunner</b> 是「在一个工具内反复调 MCP 工具」的执行循环。diagnose 用前者的三段式直觉，未来的 research 工具用后者。</p>
+
+<h2 id="prompt">8 · 固定 8 层 Prompt Stack</h2>
+<p>所有子 agent 的每一次 LLM 调用都走同一套有序、分层、KV-cache 友好的 prompt 装配（<code>memory/context_assembler.assemble_prompt</code>）。前 5 层对同一 agent 稳定 → 当可缓存 prefix；后 3 层每轮变 → volatile 尾部。</p>
+<div class="stack">
+  <div class="hd">稳定 prefix（可缓存）</div>
+  <div class="row"><span class="n">1</span><span class="nm pfx">System / Constitution</span><span class="d">身份 + 安全 + 格式不变量</span></div>
+  <div class="row"><span class="n">2</span><span class="nm pfx">Project Guide</span><span class="d">项目级运行时约束（PROJECT_GUIDE.md）</span></div>
+  <div class="row"><span class="n">3</span><span class="nm pfx">User Memory</span><span class="d">用户长期稳定偏好（MEMORY.md）</span></div>
+  <div class="row"><span class="n">4</span><span class="nm pfx">Active Skill</span><span class="d">当前 agent 的 SOP / persona（怎么做事）</span></div>
+  <div class="row"><span class="n">5</span><span class="nm pfx">Tool Registry</span><span class="d">能用什么工具 + 边界 + 输出 schema</span></div>
+  <div class="hd">易变尾部（每轮变）</div>
+  <div class="row"><span class="n">6</span><span class="nm vol">Conversation State</span><span class="d">最近发生了什么 / 有哪些 artifact 可引用</span></div>
+  <div class="row"><span class="n">7</span><span class="nm vol">Evidence</span><span class="d">这轮回答基于的具体材料（检索/附件/工具结果）</span></div>
+  <div class="row"><span class="n">8</span><span class="nm vol">User Input</span><span class="d">当前用户输入</span></div>
+</div>
+<p class="muted">冲突解决：越靠后优先级越高，但安全/格式不可被 User Input 覆盖，Evidence 优先于模型先验。这套分层是「自己搭 agent」里相当于框架替你做的那部分 —— 我们手写了它，因此能逐层报 token、控制缓存边界。</p>
+
+<h2 id="state">9 · 状态不放在图里，放在 SQLite</h2>
+<p>典型 LangGraph 用 checkpointer 持久化图状态。LearnForge 把对话状态收口到 <b>SQLite</b>，图基本无状态：</p>
+<ul class="tight">
+  <li><code>dialogue_turns</code> —— 会话账本（role / capability / route_mode / topic / tool_calls / artifacts），路由的 <code>last_capability</code> 由它重算（带 aside 衰减）。</li>
+  <li><code>session_state</code> —— 短期会话记忆：<b>pinned</b>（重要结果永不压缩）+ 早期压缩 <b>summary</b> + 最近原文轮。</li>
+  <li><b>会话级 compaction</b>（Claude Code 风格）：按 <b>token 阈值</b>而非轮数折叠最旧轮进 summary，至少保留 N 轮；周期性全量重摘修正漂移。详见 <code>record_turn()</code>。</li>
+</ul>
+<p class="muted">好处：无状态 HTTP 下每轮从 SQLite 重建上下文；不依赖某个进程内的图实例存活；NEEDS_INPUT 追问回路天然支持（这轮返回问题，下轮带答案回来）。</p>
+
+<h2 id="why">10 · LangGraph 还剩什么 & 为什么这么搭</h2>
+<h3>LangGraph 仍然保留的地方</h3>
+<ul class="tight">
+  <li><b>主图外壳</b>：3 节点直线，作为统一的 compile/invoke substrate（<code>main_graph.py</code>）。</li>
+  <li><b>mock 子图</b>：S1–S7 状态机，真正用到 LangGraph 的 <code>interrupt()</code> / <code>Command(resume=...)</code> 做多轮人机交互（S3 等用户答题、S_PAUSE）。这是 LangGraph 最不可替代、留它最值的地方。</li>
+</ul>
+<h3>为什么把大脑手搓出来，而不是交给图</h3>
+<table>
+  <thead><tr><th>诉求</th><th>手搓循环怎么满足</th></tr></thead>
+  <tbody>
+    <tr><td><b>离线确定性</b>（“链路永远通”）</td><td>每个 LLM 决策点都有确定性兜底；无 key 时整条编排是纯规则、可回归。</td></tr>
+    <tr><td><b>安全 / 受限动作空间</b></td><td>下一步只能从 <code>{qa,planning,diagnosis,mock,finish}</code> 里选，非法即落兜底 —— 比开放的图跳转更可控。</td></tr>
+    <tr><td><b>唯一写者不变量</b></td><td>所有写都收口在 <code>_apply_step</code>；图不直接写状态，工具只产增量。</td></tr>
+    <tr><td><b>可观测 / 可解释</b></td><td>普通 Python 控制流，断点即真相；<code>executed</code> 列表直接画出链路给 UI/trace。</td></tr>
+    <tr><td><b>喂「为什么」做 replan</b></td><td>把子工具的 <code>reason</code>（依据/缺口/降级）显式喂回 decide_next —— 这种细粒度反馈在边-条件式 DAG 里很别扭。</td></tr>
+  </tbody>
+</table>
+
+<div class="keypt">
+<b>所以「用什么替代了 LangGraph」？</b><br>
+答案是：<b class="acc">一个手写的、动作空间受限的 ReAct 编排循环</b>（<code>ManagerAgent.execute_dynamic / decide_next / _apply_step</code>），
+配上<b class="pur">显式 plan-as-tool-calls</b>、<b class="grn">Skill 权限门</b>、<b>固定 8 层 Prompt Stack</b> 和 <b>SQLite 状态</b>。
+LangGraph 从「状态机框架」退化为「一层调用壳 + mock 的 interrupt/resume 引擎」。智能不在图里，在 Python 里。
+</div>
+
+<footer>
+  LearnForge · Agent 架构说明 · 关键文件：<code>orchestration/manager.py</code>（编排循环）、<code>orchestration/planner.py</code>（plan-as-tool-calls）、
+  <code>orchestration/graph/main_graph.py</code>（薄图壳）、<code>agents/base.py</code>（工具基类 + 权限门）、
+  <code>agents/react/loop.py</code>（tool-calling ReAct）、<code>memory/context_assembler.py</code>（8 层 Prompt Stack）。
+</footer>
+</div>
+</body>
+</html>

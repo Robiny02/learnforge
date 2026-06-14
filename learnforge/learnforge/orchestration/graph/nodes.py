@@ -49,7 +49,9 @@ def manager_execute(state: MainState) -> Dict[str, Any]:
         responses, meta, plan = _mgr().run_active_mock(user_input, active_mock, trace_id)
     else:
         # Manager ReAct 编排：每步看子 agent 结果决定下一步，直到 finish/预算。
-        responses, meta, plan = _mgr().execute_dynamic(user_input, trace_id=trace_id)
+        # 阶段一：把 session_id 传下去，让 execute_dynamic 装配有界会话上下文注入子 agent prompt。
+        responses, meta, plan = _mgr().execute_dynamic(
+            user_input, trace_id=trace_id, session_id=state.get("session_id"))
     return {
         "plan": plan,
         "responses": [r.model_dump() for r in responses],

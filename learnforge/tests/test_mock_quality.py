@@ -116,7 +116,7 @@ def test_interviewer_injects_sop_and_threads_complex_context(llm_on):
     system = str(llm_on.last["system"])
     prompt = str(llm_on.last["prompt"])
     # SOP + few-shot 确实注入 system（cacheable prefix）
-    assert "出题 SOP" in system
+    assert "pick_grill_round" in system  # 结构化出题 SOP 的步骤进入说明
     assert "few-shot" in system
     assert "好题" in system and "烂题" in system  # 好/烂对照样例
     # 复杂运行时上下文进入 prompt（grilling brief）：claim、上一轮回答、风险点、拷打轮次
@@ -216,7 +216,7 @@ def test_coach_injects_sop_and_aggregates_complex_turns(llm_on):
 
     system = str(llm_on.last["system"])
     prompt = str(llm_on.last["prompt"])
-    assert "复盘 SOP" in system
+    assert "跨轮的才是真弱点" in system  # 结构化复盘 SOP 的步骤进入说明
     assert "answer_card 质量门槛" in system
     assert "passable" in system and "strong" in system
     # 逐轮证据进入 prompt

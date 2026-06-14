@@ -253,3 +253,109 @@ def grounded_followup(topic: str,
     target = focus[turn_index % len(focus)] if focus else f"{topic} 的核心原理"
     q = f"（难度{difficulty}）围绕 {topic}：请就「{target}」展开，{rnd['intent']}"
     return {"question": q, "expected_points": [target, "证据/指标", "常见误区"]}
+
+
+# --- 高频题库（vendored from tech-interview-skill/tech-interview/references/question-patterns.md）---
+# 离线兜底题源 + LLM few-shot 参考；归属见 skill_pack/NOTICE.md。每条：q/difficulty(1-5)/points。
+QUESTION_PATTERNS: Dict[str, List[Dict[str, object]]] = {
+    "frontend": [
+        {"q": "说一下 JavaScript 的事件循环（宏任务/微任务）机制", "difficulty": 3,
+         "points": ["宏任务 vs 微任务", "执行顺序", "Node 与浏览器差异"]},
+        {"q": "React setState 是同步还是异步？React 18 有什么变化？", "difficulty": 3,
+         "points": ["批量更新", "Automatic Batching", "flushSync", "Lane 优先级"]},
+        {"q": "浏览器从输入 URL 到页面渲染完成经历了哪些步骤？", "difficulty": 3,
+         "points": ["DNS/TCP/TLS", "DOM/CSSOM", "Layout/Paint/Composite", "关键渲染路径"]},
+        {"q": "什么是闭包？应用场景与内存问题？", "difficulty": 2,
+         "points": ["词法作用域", "防抖节流/柯里化", "内存泄漏", "var/let"]},
+    ],
+    "backend": [
+        {"q": "Java HashMap 底层实现？JDK 1.8 做了哪些优化？", "difficulty": 3,
+         "points": ["数组+链表+红黑树", "hash 扰动", "树化阈值", "扩容/负载因子", "线程不安全"]},
+        {"q": "常见限流算法有哪些？分布式限流怎么做？", "difficulty": 3,
+         "points": ["固定/滑动窗口", "漏桶/令牌桶", "Redis+Lua", "多维度限流"]},
+        {"q": "如何设计幂等接口？", "difficulty": 3,
+         "points": ["天然幂等方法", "唯一请求 ID 去重", "唯一约束/状态机/Token"]},
+        {"q": "微服务的服务通信与分布式事务如何处理？", "difficulty": 4,
+         "points": ["同步/异步通信", "2PC/TCC/Saga/本地消息表", "CAP/BASE 取舍"]},
+    ],
+    "database": [
+        {"q": "MySQL 索引为什么用 B+ 树而非 B 树或哈希？", "difficulty": 3,
+         "points": ["叶子链表/范围查询", "树高/非叶仅存 key", "聚簇 vs 二级索引回表"]},
+        {"q": "MySQL 事务隔离级别与 MVCC 实现原理？", "difficulty": 4,
+         "points": ["四级别及解决的问题", "Undo 版本链/ReadView", "RC vs RR", "Next-Key Lock 解决幻读"]},
+        {"q": "Redis 缓存穿透/击穿/雪崩的解决方案？", "difficulty": 3,
+         "points": ["布隆过滤器/缓存空值", "互斥锁/逻辑过期", "过期加随机/多级缓存/降级"]},
+        {"q": "Redis 与 MySQL 数据一致性如何保证？", "difficulty": 4,
+         "points": ["Cache Aside", "延迟双删", "binlog 订阅", "强一致分布式锁"]},
+    ],
+    "system_design": [
+        {"q": "设计一个短链接系统", "difficulty": 3,
+         "points": ["Base62 编码", "301 vs 302", "发号器集群", "Redis 缓存"]},
+        {"q": "设计一个秒杀系统", "difficulty": 4,
+         "points": ["静态化+CDN", "Redis Lua 预减库存", "MQ 异步下单", "熔断降级"]},
+        {"q": "设计一个消息队列系统", "difficulty": 4,
+         "points": ["可靠性/顺序性/幂等消费", "堆积处理", "Kafka/RocketMQ 取舍"]},
+        {"q": "如何保证系统高可用？", "difficulty": 4,
+         "points": ["冗余/负载均衡", "熔断降级", "监控告警", "SLA 指标"]},
+    ],
+    "cs_basics": [
+        {"q": "TCP 三次握手与四次挥手？为什么握手三次挥手四次？", "difficulty": 3,
+         "points": ["SYN/ACK 流程", "TIME_WAIT 2MSL", "大量 TIME_WAIT/CLOSE_WAIT 排查"]},
+        {"q": "进程、线程、协程的区别？", "difficulty": 2,
+         "points": ["资源分配 vs 调度", "用户态调度", "各语言协程实现"]},
+        {"q": "什么是死锁？四个必要条件与如何避免？", "difficulty": 3,
+         "points": ["四条件", "固定加锁顺序", "银行家算法", "排查工具"]},
+        {"q": "LRU 缓存的实现原理？", "difficulty": 3,
+         "points": ["哈希表+双向链表 O(1)", "手写实现", "Redis 近似 LRU"]},
+    ],
+    # 本项目偏 AI 方向：补 RAG/Agent 高频追问（与 role_focus 对齐，非 patterns.md 原文）。
+    "rag": [
+        {"q": "你的 RAG 链路里 chunk 大小、top_k、rerank 怎么定的？依据是什么？", "difficulty": 4,
+         "points": ["chunk/overlap 取舍", "top_k 与召回/精度", "rerank 收益与成本", "评估集"]},
+        {"q": "怎么评估检索质量？召回率和引用准确率怎么测？", "difficulty": 4,
+         "points": ["Recall@k/MRR", "引用对齐", "标注集构建", "bad case 分析"]},
+        {"q": "幻觉和拒答怎么处理？无证据时怎么降断言？", "difficulty": 4,
+         "points": ["证据约束", "拒答阈值", "引用强制", "降级表达"]},
+    ],
+    "agent": [
+        {"q": "你的 agent 工具调用怎么做参数校验和失败重试？", "difficulty": 4,
+         "points": ["tool schema", "参数校验", "重试/超时", "人工复核"]},
+        {"q": "多步任务怎么规划？状态怎么维护、出错怎么恢复？", "difficulty": 4,
+         "points": ["planner/ReAct", "状态机/trace", "失败类型", "恢复策略"]},
+    ],
+}
+
+# 主题/角色关键词 → 题库类别。
+_PATTERN_KEYWORDS: Dict[str, List[str]] = {
+    "frontend": ["前端", "javascript", "js", "react", "vue", "css", "浏览器", "frontend"],
+    "backend": ["后端", "backend", "java", "go", "spring", "并发", "限流", "幂等", "微服务"],
+    "database": ["数据库", "mysql", "redis", "sql", "索引", "事务", "缓存", "mongo", "database"],
+    "system_design": ["系统设计", "system design", "架构", "高可用", "秒杀", "短链", "限流系统", "feed"],
+    "cs_basics": ["计算机基础", "网络", "操作系统", "tcp", "http", "进程", "线程", "死锁", "算法"],
+    "rag": ROLE_KEYWORDS["rag"],
+    "agent": ROLE_KEYWORDS["agent"],
+}
+
+
+def load_question_patterns(role_type: Optional[str] = None,
+                           topic: Optional[str] = None,
+                           limit: int = 4) -> List[Dict[str, object]]:
+    """按 role/topic 召回相关高频题（离线兜底题源 + LLM 提示参考）。
+
+    优先匹配 role_type 对应类别，再按 topic 关键词匹配；都没命中 → 退回 system_design 通用题。
+    """
+    cats: List[str] = []
+    if role_type in ("rag", "agent"):
+        cats.append(role_type)
+    blob = f"{_norm(topic)} {_norm(role_type)}"
+    for cat, kws in _PATTERN_KEYWORDS.items():
+        if cat not in cats and any(kw in blob for kw in kws):
+            cats.append(cat)
+    if not cats:
+        cats = ["cs_basics", "system_design"]
+    out: List[Dict[str, object]] = []
+    for cat in cats:
+        out.extend(QUESTION_PATTERNS.get(cat, []))
+        if len(out) >= limit:
+            break
+    return out[:limit]

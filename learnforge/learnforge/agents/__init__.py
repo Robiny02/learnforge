@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 from .diagnosis import DiagnosisAgent
 from .mock import (
     CoachAgent,
+    InterviewDirector,
     InterviewerAgent,
     JudgeAgent,
     MockInterviewAgent,
-    StrategistAgent,
 )
 from .planning import PlanningAgent
 from .qa import QAAgent, RouterAgent, SynthesizerAgent, VerifierAgent
@@ -49,7 +49,7 @@ __all__ = [
     "MockInterviewAgent",
     "InterviewerAgent",
     "JudgeAgent",
-    "StrategistAgent",
+    "InterviewDirector",
     "CoachAgent",
     "DiagnosisAgent",
 ]

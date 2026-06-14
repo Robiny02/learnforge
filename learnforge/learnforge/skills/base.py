@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from pydantic import BaseModel
 
 from ..contracts.enums import AgentId, ModelTier
+from .sop import SOP
 
 
 class SkillPermissionError(PermissionError):
@@ -45,6 +46,9 @@ class SkillSpec:
     triggers: Dict[str, List[str]] = field(default_factory=dict)
     scripts: Dict[str, str] = field(default_factory=dict)
     max_react_steps: int = 0
+    # Active Skill 的结构化 SOP（稳定能力说明）。优先于 progressive_sections["sop"] 字符串渲染；
+    # 为空则回退旧字符串/系统提示（兼容未迁移的 agent）。见 skills/sop.py 与 skills/sops/。
+    sop: Optional[SOP] = None
     progressive_sections: Dict[str, str] = field(default_factory=dict)
     strategy_rules: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     input_schema: Optional[Type[BaseModel]] = None
@@ -144,4 +148,14 @@ class Skill:
             return "Scripts:\n" + "\n".join(
                 f"- {name}: {path}" for name, path in self.spec.scripts.items()
             )
+        if section == "sop":
+            # 优先用结构化 SOP（skills/sop.py）；未迁移的 agent 回退旧 progressive_sections 字符串。
+            structured = self.sop_text()
+            if structured:
+                return "SOP:\n" + structured
+            return self.spec.progressive_sections.get("sop", "")
         return self.spec.progressive_sections.get(section, "")
+
+    def sop_text(self) -> str:
+        """渲染结构化 SOP 为注入文本；无结构化 SOP → 空串。供 prompt 装配与可观测性单一取用。"""
+        return self.spec.sop.render() if self.spec.sop is not None else ""

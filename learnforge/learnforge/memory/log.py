@@ -125,7 +125,6 @@ MEMORY_LOG = MemoryLog()
 # ---------------------------------------------------------------------------
 def memory_files_overview(db_path: Optional[str] = None) -> List[str]:
     """当前系统存在哪些记忆来源（§2.1）。读失败的项标注，不抛异常。"""
-    from .. import config
     from .files import daily_files, root_memory_path
 
     lines: List[str] = []
@@ -184,58 +183,123 @@ def _first_meaningful_line(text: str, limit: int = 48) -> str:
     return ""
 
 
-def prompt_load_overview(
-    session_id: Optional[str] = None, db_path: Optional[str] = None
-) -> List[dict]:
-    """本轮注入 prompt 的「文件/来源」概览：[{kind, name, summary, tokens}]。
+def _row(layer: int, kind: str, name: str, text: str) -> dict:
+    """统一一行：layer=固定 Prompt Stack 层序(1-8)，tokens 用与 assembler 同一套 count_tokens。"""
+    from .tokens import count_tokens
 
-    只覆盖每轮稳定注入的部分（MEMORY.md + 会话短期记忆）；按需召回的 daily 片段
-    属于 RetrievalAgent，作为事件出现在记忆日志里（READ/INJECT「搜索/注入长期记忆」）。
-    全 best-effort，任意来源读失败即跳过，不抛异常。
+    return {"layer": layer, "kind": kind, "name": name,
+            "summary": _first_meaningful_line(text), "tokens": count_tokens(text)}
+
+
+def _last_agent_skill(session_id: Optional[str], db_path: Optional[str],
+                      agent_capability: Optional[str]):
+    """本轮真正跑的子 agent 的 Skill（决定 Active Skill / Tool Registry 是哪个）。
+
+    capability 显式给优先；否则从最近一条 user 对话轮的 capability 推断。映射 qa/planning/
+    diagnosis/mock → AgentId → SKILL_REGISTRY.primary。拿不到 → None（面板少这两层）。
+    """
+    cap = agent_capability
+    if cap is None and session_id:
+        try:
+            from ..storage.repositories import DialogueTurnRepository
+
+            proj = DialogueTurnRepository(db_path=db_path).recent_projection(session_id, limit=1)
+            cap = proj[-1].get("capability") if proj else None
+        except Exception:
+            cap = None
+    try:
+        from ..contracts.enums import AgentId
+        from ..skills.bootstrap import ensure_skills_registered
+        from ..skills.registry import SKILL_REGISTRY
+
+        mapping = {"qa": AgentId.QA, "planning": AgentId.PLANNING,
+                   "diagnosis": AgentId.DIAGNOSIS, "mock": AgentId.MOCK}
+        agent = mapping.get(str(cap or "").lower())
+        if agent is None:
+            return None
+        ensure_skills_registered()
+        return SKILL_REGISTRY.primary(agent)
+    except Exception:
+        return None
+
+
+def prompt_load_overview(
+    session_id: Optional[str] = None, db_path: Optional[str] = None,
+    *, agent_capability: Optional[str] = None, user_input: str = "", evidence: str = "",
+) -> List[dict]:
+    """本轮 prompt 真实加载的来源，**按固定 8 层 Prompt Stack** 逐层报告 [{layer,kind,name,summary,tokens}]。
+
+    与 memory/context_assembler 的 8 层一一对应，只展示**真正进入 prompt 的层**：
+      1 System  2 Project Guide  3 User Memory  4 Active Skill  5 Tool Registry
+      6 Conversation State（pinned/summary/recent/最近调用/可引用附件）  7 Evidence  8 User Input
+    Active Skill / Tool Registry 取本轮实际子 agent；Conversation State 与 execute_dynamic 注入共用
+    build_session_context（单一真值）。可测量才报——不再显示未进入 prompt 的幻影注入。best-effort。
     """
     out: List[dict] = []
+    # 1 System / Constitution（assembler 默认 system 串，固定注入）
+    try:
+        from .context_assembler import _DEFAULT_SYSTEM
+
+        out.append(_row(1, "System", "stack:system", _DEFAULT_SYSTEM))
+    except Exception:
+        pass
+    # 2 Project Guide（PROJECT_GUIDE.md）
+    try:
+        from .project_guide import project_guide_text
+
+        pg = project_guide_text()
+        if pg:
+            out.append(_row(2, "Project Guide", "PROJECT_GUIDE.md", pg))
+    except Exception:
+        pass
+    # 3 User Memory（MEMORY.md）
     try:
         from .files import read_root_memory
 
-        text = read_root_memory()
-        if text:
-            out.append({
-                "kind": "稳定",
-                "name": "MEMORY.md",
-                "summary": _first_meaningful_line(text),
-                "tokens": estimate_tokens(text),
-            })
+        um = read_root_memory()
+        if um:
+            out.append(_row(3, "User Memory", "MEMORY.md", um))
     except Exception:
         pass
+    # 4/5 Active Skill + Tool Registry（本轮实际子 agent 的 SOP / 工具边界）
+    try:
+        skill = _last_agent_skill(session_id, db_path, agent_capability)
+        if skill is not None:
+            active = "\n".join(p for p in [skill.spec.system_prompt, skill.load_instructions()] if p)
+            out.append(_row(4, "Active Skill", skill.spec.name, active))
+            tools = ", ".join(skill.spec.allowed_tools) or "none"
+            out.append(_row(5, "Tool Registry", skill.spec.name,
+                            f"allowed_tools: {tools}"))
+    except Exception:
+        pass
+    # 6 Conversation State（与注入同源 build_session_context；逐段真实 token）
     if session_id:
         try:
-            from ..storage.repositories import SessionStateRepository
+            from .session_context import build_session_context
 
-            st = SessionStateRepository(db_path=db_path).get(session_id)
-            if st:
-                parts: List[str] = []
-                if st.get("summary"):
-                    parts.append(str(st["summary"]))
-                rounds = st.get("recent_messages") or []
-                for r in rounds:
-                    parts.append(f"用户：{r.get('user', '')}\n回复：{r.get('reply', '')}")
-                joined = "\n".join(parts)
-                if joined:
-                    out.append({
-                        "kind": "会话",
-                        "name": f"session:{session_id}",
-                        "summary": f"{len(rounds)} 轮原文 + {'早期摘要' if st.get('summary') else '无摘要'}",
-                        "tokens": estimate_tokens(joined),
-                    })
+            _LABEL = {"pinned": "重要结果", "summary": "会话摘要", "recent": "最近对话",
+                      "tools": "最近调用", "attachments": "可引用附件"}
+            for s in build_session_context(session_id, db_path).sections:
+                if s.text.strip():
+                    out.append({"layer": 6, "kind": f"Conversation State·{_LABEL.get(s.kind, s.kind)}",
+                                "name": f"session:{s.kind}",
+                                "summary": _first_meaningful_line(s.text), "tokens": s.tokens})
         except Exception:
             pass
+    # 7 Evidence（本轮材料：检索/附件召回——transient，由调用方传入才报，不臆造）
+    if evidence.strip():
+        out.append(_row(7, "Evidence", "this-turn", evidence))
+    # 8 User Input（本轮用户输入——调用方传入才报）
+    if user_input.strip():
+        out.append(_row(8, "User Input", "this-turn", user_input))
     return out
 
 
 def memory_panel_payload(
-    session_id: Optional[str] = None, db_path: Optional[str] = None
+    session_id: Optional[str] = None, db_path: Optional[str] = None,
+    *, user_input: str = "", evidence: str = "",
 ) -> dict:
-    """打包给前端的记忆面板：本轮事件 + 最小摘要 + 注入来源(含 token)。"""
+    """打包给前端的记忆面板：本轮事件 + 最小摘要 + **固定 8 层 Prompt Stack** 注入来源(含 token)。"""
     return {
         "events": [
             {
@@ -248,7 +312,8 @@ def memory_panel_payload(
             for e in MEMORY_LOG.events
         ],
         "summary": MEMORY_LOG.summary(),
-        "loaded": prompt_load_overview(session_id, db_path),
+        "loaded": prompt_load_overview(session_id, db_path,
+                                       user_input=user_input, evidence=evidence),
     }
 
 

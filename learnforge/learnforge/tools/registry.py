@@ -118,6 +118,9 @@ def _populate(registry: "MCPRegistry") -> None:
         _namespace("notion", "Namespace for Notion external publishing.", ToolEffect.EXTERNAL),
         _namespace("mcp", "Namespace for external MCP server tools.", ToolEffect.EXTERNAL),
         _namespace("mock", "Namespace for mock session runtime capabilities.", ToolEffect.WRITE),
+        # 受控文件工具 namespace（本阶段：read 可只读开放；write/edit 登记权限边界但默认安全/dry-run）。
+        # 注意：本期**不引入** shell/exec —— 注册表里没有这类工具，越权调用一律 require_tool 拒绝。
+        _namespace("file", "Namespace for controlled, workspace-scoped file access.", ToolEffect.READ),
         _tool("notion.sync", "Publish a learning plan as a beautiful Notion note.",
               ToolEffect.EXTERNAL, owners=["planning"], audit=True),
         _tool("mcp.notion.search_pages", "Search pages/databases visible to the Notion integration.",
@@ -137,6 +140,22 @@ def _populate(registry: "MCPRegistry") -> None:
         _tool("mcp.github.read_file", "Read one text file from a GitHub repository.",
               ToolEffect.EXTERNAL, owners=["qa", "retrieval", "planning", "diagnosis"], audit=True,
               timeout_ms=60000),
+        # 受控文件工具（具体名，可声明）。file.read 只读；file.write/edit 是高风险写，
+        # owner=evidence（未来归宿），但**当前没有任何 skill 声明它们** → 默认无人可调；
+        # 即使被直接调用，handler 也默认 dry-run（tools/files.py），双重安全。
+        _tool("file.read", "Read a UTF-8 text file inside the allowed workspace (read-only).",
+              ToolEffect.READ, owners=["evidence", "research"], timeout_ms=2000),
+        _tool("file.write", "Write a workspace file (default dry-run/diff; real write gated).",
+              ToolEffect.WRITE, owners=["evidence"], audit=True, timeout_ms=2000),
+        _tool("file.edit", "Edit a workspace file by string replacement (default dry-run/diff).",
+              ToolEffect.WRITE, owners=["evidence"], audit=True, timeout_ms=2000),
+        # 隔离上下文证据 worker 的只读 source 工具（EvidenceResearchAgent 用）。
+        _tool("repo.search", "Read-only keyword search over workspace source files.",
+              ToolEffect.READ, owners=["evidence", "research"], timeout_ms=3000),
+        _tool("attachment.recall", "Recall uploaded attachment material (read-only).",
+              ToolEffect.READ, owners=["evidence", "research"], timeout_ms=2000),
+        _tool("resume.recall", "Recall stored resume diagnoses / resume text (read-only).",
+              ToolEffect.READ, owners=["evidence", "research"], timeout_ms=2000),
         _tool("plan.read_candidates", "Read real candidate knowledge atoms by topics.",
               ToolEffect.READ, owners=["planning"]),
         _tool("report.generate", "Generate a structured Markdown report file under docs/.",
@@ -156,6 +175,8 @@ def _populate(registry: "MCPRegistry") -> None:
               owners=["manager"]),
         _tool("agent.mock", "Delegate to the mock interview subsystem.", ToolEffect.DELEGATE,
               owners=["manager"]),
+        _tool("agent.evidence", "Delegate to the read-only evidence research worker.",
+              ToolEffect.DELEGATE, owners=["manager"]),
         _tool("agent.router", "Delegate to the QA router.", ToolEffect.DELEGATE, owners=["qa"]),
         _tool("agent.synthesizer", "Delegate to the QA synthesizer.", ToolEffect.DELEGATE, owners=["qa"]),
         _tool("agent.verifier", "Delegate to the QA verifier.", ToolEffect.DELEGATE, owners=["qa"]),
