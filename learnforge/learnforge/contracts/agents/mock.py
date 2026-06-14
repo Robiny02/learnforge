@@ -63,6 +63,9 @@ class InterviewerInput(BaseModel):
     last_question: Optional[str] = None
     last_answer: Optional[str] = None
     turn_index: int = 0
+    # 当前环节 + 出题模式（接入 tech-interview skill 三环节 + 证据式追问/简历诚信点破）。
+    phase: Optional[str] = None      # basics | project | system_design（空 → 不约束环节）
+    mode: str = "ask"                # ask（出新题）| followup（深挖上一答）| probe（简历诚信点破）
 
 
 class InterviewerOutput(BaseModel):
@@ -151,7 +154,7 @@ class MockInput(BaseModel):
 
 class MockOutput(BaseModel):
     session_id: Optional[str] = None
-    # status：active(待答题) | paused(暂停可 resume) | review(出复盘) | escalate(交回 Manager)
+    # status：active(待答题) | paused(暂停可 resume) | review(出复盘) | escalate(交回 Manager) | expired
     status: str = "active"
     question: Optional[str] = None
     followup: Optional[str] = None
@@ -162,3 +165,48 @@ class MockOutput(BaseModel):
     escalate_action: Optional[str] = None
     handoff_summary: Optional[str] = None  # 交回常规链路的面试上下文（§6b）
     events: List[EventPayload] = Field(default_factory=list)
+    # 当前环节 + 待办状态（供 UI/观测；向后兼容，可选）。
+    phase: Optional[str] = None
+    pending: Optional[str] = None  # answer | continue_decision | None
+
+
+# --- MockState：跨 HTTP 调用持久化的整场面试状态（替代旧 LangGraph checkpointer，§5.4 重构） ---
+class MockState(BaseModel):
+    """整场模拟面试的全量状态，由 MockStateStore 序列化进 SQLite（thread key = session_id）。
+
+    每个 HTTP 调用 = 跑一轮：load(state) → run_turn → save(state)。无 LangGraph replay。
+    """
+
+    session_id: str
+    topic: str
+    difficulty: int = Field(default=3, ge=1, le=5)
+    max_turns: int = 10
+    phase: str = "basics"            # InterviewPhase.value
+    turn_index: int = 0              # 已答题轮数
+    phase_question_count: int = 0    # 当前环节已出题数（达 MOCK_PHASE_QUESTIONS 推进环节）
+    rounds_since_question: int = 0   # 连续"未推进出题"轮数（提示/复述/公布答案/跳过…），达阈值触发主动询问
+    pending: Optional[str] = None    # answer | continue_decision | None
+    status: str = "active"           # active | paused | review | escalated | settled | expired
+
+    # 当前待答题
+    current_question: Optional[str] = None
+    current_expected_points: List[str] = Field(default_factory=list)
+    current_atom_refs: List[str] = Field(default_factory=list)
+    # 上一题快照（供 redo 回退）
+    prev_question: Optional[str] = None
+    prev_expected_points: List[str] = Field(default_factory=list)
+    prev_atom_refs: List[str] = Field(default_factory=list)
+
+    # 累积（switch_topic 不重置）
+    turns: List[Turn] = Field(default_factory=list)
+    turn_scores: List[Score] = Field(default_factory=list)
+    topic_coverage: List[str] = Field(default_factory=list)
+    answered_atom_refs: List[str] = Field(default_factory=list)
+
+    context: Optional[InterviewContext] = None
+
+    # 产出
+    handoff_summary: Optional[str] = None
+    review: Optional[CoachReport] = None
+    events: List[EventPayload] = Field(default_factory=list)
+    mastery_updates: List[dict] = Field(default_factory=list)

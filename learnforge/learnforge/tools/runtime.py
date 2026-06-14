@@ -49,8 +49,12 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry()
 
 def _register_defaults() -> None:
     from .diagnosis import register_diagnosis_tools
+    from .evidence_sources import register_evidence_source_tools
+    from .files import register_file_tools
 
     register_diagnosis_tools(DEFAULT_TOOL_REGISTRY)
+    register_file_tools(DEFAULT_TOOL_REGISTRY)
+    register_evidence_source_tools(DEFAULT_TOOL_REGISTRY)
 
 
 _register_defaults()

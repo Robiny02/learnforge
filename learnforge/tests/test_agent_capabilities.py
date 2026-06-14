@@ -31,6 +31,7 @@ READ_ONLY_AGENTS = [
     AgentId.JUDGE,
     AgentId.STRATEGIST,
     AgentId.COACH,
+    AgentId.EVIDENCE,
 ]
 
 
@@ -93,8 +94,8 @@ def test_diagnosis_skill_trigger_metadata_selects_progressively():
     assert by_intent[0].spec.name == "diagnosis.v1"
     assert by_event[0].spec.name == "diagnosis.v1"
     assert by_keyword[0].spec.name == "diagnosis.v1"
-    # SOP 现在经 "sop" 段被默认加载链激活（原 "react_sop" 键从未被加载）。
-    assert "Diagnosis ReAct SOP" in by_intent[0].load_instructions()
+    # SOP 现在是结构化 SOP（skills/sops/diagnosis.py），经 "sop" 段进入说明。
+    assert "diagnosis.search_events" in by_intent[0].load_instructions()  # SOP 步骤进入 prompt
 
 
 def test_diagnosis_react_uses_real_tool_calls(seeded_db):

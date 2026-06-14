@@ -195,7 +195,7 @@ def test_diagnose_resume_llm_path_uses_sop_and_adopts_output(tmp_db, monkeypatch
     # 项目级 SOP + few-shot 进入 system；简历正文 + pipeline 指令进入 prompt
     system = str(captured.get("system", ""))
     prompt = str(captured.get("prompt", ""))
-    assert "项目级简历诊断 SOP" in system and "few-shot" in system
+    assert "子断言" in system and "few-shot" in system  # 结构化简历诊断 SOP 进入说明
     assert "claim_type" in system and "技术栈背景" in system  # claim 分类 + tech-stack 不当风险
     assert "项目级诊断" in prompt and "主导上线企业级 RAG 系统" in prompt
     assert "EvidencePacket" in prompt or "packets" in prompt  # 证据包 pipeline

@@ -44,9 +44,11 @@ from ..storage.repositories import (
 )
 from ..agents.base import BaseAgent
 from ..agents.diagnosis import DiagnosisAgent
+from ..agents.evidence import EvidenceResearchAgent
 from ..agents.mock import MockInterviewAgent
 from ..agents.planning import PlanningAgent
 from ..agents.qa import QAAgent
+from ..contracts.agents.evidence import EvidencePacket, EvidenceRequest
 
 
 class NextStep(BaseModel):
@@ -83,6 +85,7 @@ class ManagerAgent(BaseAgent):
         self.planning = PlanningAgent(db_path=db_path)
         self.diagnosis = DiagnosisAgent(db_path=db_path)
         self.mock = MockInterviewAgent(db_path=db_path)
+        self.evidence = EvidenceResearchAgent(db_path=db_path)
 
     # ---------------- ReAct 兜底意图（仅 LLM 不可用时用，不预拆 DAG）----------------
     @staticmethod
@@ -141,7 +144,9 @@ class ManagerAgent(BaseAgent):
 
     def _dispatch_impl(self, agent: str, user_input: str, context: Dict[str, Any]) -> ResponsePayload:
         if agent == "qa":
-            out = self.qa.run(QAInput(question=user_input))
+            # 阶段一：把有界的会话上下文（pinned/summary/recent/最近调用/附件引用）注入 QA prompt。
+            out = self.qa.run(QAInput(question=user_input,
+                                      session_context=context.get("session_context", "")))
             self._emit_qa_signal(out)
             self.remember_qa(user_input, out)
             return ResponsePayload(status=Status.OK, confidence=out.confidence,
@@ -162,15 +167,17 @@ class ManagerAgent(BaseAgent):
                                    reason=self._reason_for("diagnosis", out))
         if agent == "planning":
             diag = context.get("diagnosis")
+            sctx = context.get("session_context", "")
             if diag is not None:
                 pin = PlanningInput(
                     mode=PlanMode.MODIFY,
                     diagnosis=DiagnosisResult(**diag),
                     existing_path_ref=context.get("existing_path_ref", "current"),
                     user_feedback=user_input,
+                    session_context=sctx,
                 )
             else:
-                pin = PlanningInput(mode=PlanMode.GENERATE, goal=user_input)
+                pin = PlanningInput(mode=PlanMode.GENERATE, goal=user_input, session_context=sctx)
             out = self.planning.run(pin)
             conf = 0.6 if out.status == Status.OK else 0.3
             if out.status == Status.OK:
@@ -277,6 +284,28 @@ class ManagerAgent(BaseAgent):
         if slots.max_turns:
             mi.max_turns = slots.max_turns
 
+    # ---------------- 只读证据采集（隔离上下文 worker → EvidencePacket）----------------
+    def gather_evidence(self, request: EvidenceRequest) -> EvidencePacket:
+        """委派给只读 EvidenceResearchAgent 采证据，返回结构化 EvidencePacket。
+
+        经 `require_tool("agent.evidence")` 权限门；db_path 缺省时回填 Manager 的。worker 在隔离
+        上下文里读 resume/repo/file/attachment，只回精炼片段 + 指针，不把原始全文灌回 Manager。
+        """
+        self.require_tool("agent.evidence")
+        if request.db_path is None:
+            request.db_path = self._db_path
+        return self.evidence.run(request)
+
+    def attach_evidence_to_context(self, packet: EvidencePacket,
+                                   context: Dict[str, Any]) -> str:
+        """把 EvidencePacket 渲染成**只读 artifact 摘要**注入 context，供 Diagnosis 等下游消费。
+
+        只放 summary + 证据指针（artifact_text），不放原始文件内容 —— Conversation State 不被污染。
+        """
+        artifact = packet.artifact_text()
+        context["evidence_artifact"] = artifact
+        return artifact
+
     def _apply_step(self, agent: str, resp: ResponsePayload, context: Dict[str, Any],
                     meta: Dict[str, Any], trace_id: Optional[str]) -> None:
         """单步善后（ReAct 循环每步调）：handoff 注入 / 诊断入 context / planning 唯一写者落库 + Notion。"""
@@ -378,7 +407,8 @@ class ManagerAgent(BaseAgent):
         return nxt
 
     def plan_execute(
-        self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4
+        self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4,
+        session_ctx: str = "",
     ) -> Tuple[List[ResponsePayload], Dict[str, Any], List[Dict[str, Any]]]:
         """复合任务的 plan-as-tool-calls：LLM(或确定性) 先 create 一个显式步骤计划，
         执行器逐步 dispatch + mark_step=completed，§5.6 异常（诊断空→跳过改计划+建议 mock）保留。
@@ -390,7 +420,8 @@ class ManagerAgent(BaseAgent):
 
         plan = build_plan(user_input, self._wants_plan(user_input), llm=LLM)
         responses: List[ResponsePayload] = []
-        context: Dict[str, Any] = {"composite": True, "trace_id": trace_id}
+        context: Dict[str, Any] = {"composite": True, "trace_id": trace_id,
+                                   "session_context": session_ctx}
         meta: Dict[str, Any] = {"composite": True, "skipped_modify": False,
                                 "suggest_mock": False, "planned": True}
         executed: List[Dict[str, Any]] = []
@@ -425,8 +456,26 @@ class ManagerAgent(BaseAgent):
         meta["plan_steps"] = [s.model_dump() for s in plan.steps]
         return responses, meta, executed
 
+    def build_session_context(self, session_id: Optional[str]) -> str:
+        """装配有界会话上下文并记入记忆面板（真实注入点，§5/§7）。无历史 → 空串。
+
+        单一真值：与 memory.log.prompt_load_overview 共用 build_session_context，面板不再各算一套。
+        """
+        from ..memory.session_context import build_session_context as _build
+
+        sctx = _build(session_id, db_path=self._db_path)
+        if sctx.is_empty():
+            return ""
+        MEMORY_LOG.record(
+            INJECT, "注入会话上下文",
+            f"{sctx.total_tokens()} tokens / {len(sctx.sections)} 段（"
+            + "、".join(s.kind for s in sctx.sections) + "）",
+            count=1)
+        return sctx.render()
+
     def execute_dynamic(
-        self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4
+        self, user_input: str, trace_id: Optional[str] = None, max_steps: int = 4,
+        session_id: Optional[str] = None,
     ) -> Tuple[List[ResponsePayload], Dict[str, Any], List[Dict[str, Any]]]:
         """Manager 作为动态规划者：每步看结果决定下一子 agent，直到 finish/预算。
 
@@ -434,12 +483,15 @@ class ManagerAgent(BaseAgent):
         返回 (responses, meta, executed)；executed 供 aggregate/UI 画链路。
         复合任务（"准备面试"等）→ 走显式 plan-as-tool-calls（plan_execute）。
         """
+        session_ctx = self.build_session_context(session_id)
         if self._wants_plan(user_input):
-            return self.plan_execute(user_input, trace_id=trace_id, max_steps=max_steps)
+            return self.plan_execute(user_input, trace_id=trace_id, max_steps=max_steps,
+                                     session_ctx=session_ctx)
 
         responses: List[ResponsePayload] = []
         # 动态单步路由默认不是 composite（避免把单独 diagnosis 的 trigger 误标成 composite）。
-        context: Dict[str, Any] = {"composite": False, "trace_id": trace_id}
+        context: Dict[str, Any] = {"composite": False, "trace_id": trace_id,
+                                   "session_context": session_ctx}
         meta: Dict[str, Any] = {"composite": False, "skipped_modify": False, "suggest_mock": False,
                                 "dynamic": True}
         executed: List[Dict[str, Any]] = []
@@ -502,7 +554,8 @@ class ManagerAgent(BaseAgent):
         不走 ReAct 路由——会话已锚定在 mock，直接 dispatch；返回 (responses, meta, executed)。
         """
         context: Dict[str, Any] = {"composite": False, "trace_id": trace_id,
-                                   "mock_session_id": session_id}
+                                   "mock_session_id": session_id,
+                                   "session_context": self.build_session_context(session_id)}
         meta: Dict[str, Any] = {"composite": False, "skipped_modify": False,
                                 "suggest_mock": False, "dynamic": False}
         resp = self.dispatch("mock", user_input, context, trace_id=trace_id)
@@ -707,11 +760,12 @@ class ManagerAgent(BaseAgent):
             if not parts:
                 MEMORY_LOG.record(READ, "加载会话记忆", "无历史，跳过")
                 return None
+            # 仅记 READ：真正注入 prompt 发生在 execute_dynamic 的 build_session_context（INJECT 在那里记），
+            # 这里只是把会话记忆读出来供 manager_plan 回填 state（避免谎报一次未发生的注入，§7）。
             MEMORY_LOG.record(
                 READ, "加载会话记忆",
                 f"{len(pinned)} 条固定 + {len(rounds)} 轮原文 + {'有' if st.get('summary') else '无'}早期摘要",
             )
-            MEMORY_LOG.record(INJECT, "注入会话摘要", "进入 prompt", count=1)
             return "\n".join(parts)
         except Exception:
             return None
@@ -1037,14 +1091,16 @@ class ManagerAgent(BaseAgent):
 
     # ---------------- 一站式入口（供 app/测试，Design §5.6）----------------
     def handle(self, user_input: str, active_mock: Optional[str] = None,
-               trace_id: Optional[str] = None) -> Dict[str, Any]:
+               trace_id: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         trace_id = trace_id or str(uuid.uuid4())
         if active_mock:
             # 会话锚定在进行中的 mock → 直接续跑，不走 ReAct 路由。
             responses, meta, plan = self.run_active_mock(user_input, active_mock, trace_id)
         else:
             # Manager 作为 ReAct 编排者：每步看子 agent 结果逐步决策（动作空间=4 子 agent + finish）。
-            responses, meta, plan = self.execute_dynamic(user_input, trace_id=trace_id)
+            # session_id 传入 → execute_dynamic 装配有界会话上下文注入子 agent（阶段一）。
+            responses, meta, plan = self.execute_dynamic(
+                user_input, trace_id=trace_id, session_id=session_id)
         agg = self.aggregate(responses, plan, meta)
         agg["plan"] = plan
         agg["replan_count"] = 0  # ReAct 无 replan 循环；保留字段做向后兼容。

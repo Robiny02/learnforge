@@ -25,6 +25,20 @@ def _is_interview_coaching(question: str) -> bool:
 class SynthesizerAgent(BaseAgent):
     agent_id = AgentId.SYNTHESIZER
 
+    @staticmethod
+    def _session_block(payload: SynthesizerInput) -> str:
+        """会话/项目上下文 → session 槽（assembler 注入 volatile 尾部，缓存边界之后）。
+
+        合并项目上下文 + 跨轮会话上下文（pinned/summary/recent/最近调用/附件引用，已由
+        Manager 装配且有界）。两者皆空 → 空串。提取成纯函数便于回归测试断言注入内容。
+        """
+        parts = []
+        if payload.project_context:
+            parts.append(f"项目上下文：{payload.project_context}")
+        if payload.session_context:
+            parts.append("会话上下文（供承接，勿复述）：\n" + payload.session_context)
+        return "\n\n".join(parts)
+
     def run(self, payload: SynthesizerInput) -> SynthesizerOutput:
         # 证据/上下文经 assembler 的有序槽位注入（retrieved → session → user_input），
         # 不再手工拼进 prompt——稳定 prefix 之后、缓存边界外，且消除各 agent 各拼一套的漂移。
@@ -34,8 +48,7 @@ class SynthesizerAgent(BaseAgent):
         # 用户附件文本(MD/PDF/TXT)作为自带证据并入 retrieved 槽；图片走 vision(见下方 images=)。
         if payload.attachment_text:
             retrieved_block += f"\n\n用户上传的附件内容：\n{payload.attachment_text}"
-        session_block = (f"项目上下文：{payload.project_context}"
-                         if payload.project_context else "")
+        session_block = self._session_block(payload)
         head = f"问题：{payload.question}\n"
         if payload.attachment_text and not _is_interview_coaching(payload.question):
             # 用户上传了文档（如开源 SKILL.md / 设计稿 / 简历 / JD）：要的是「把这份文档讲清楚」，

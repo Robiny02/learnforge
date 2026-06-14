@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from .contracts.enums import AgentId, ModelTier
 
@@ -38,8 +38,21 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
+# 仓库根（.../learnforge/learnforge/config.py → parents[2] = 项目根，与 integrations/report.py 一致）。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # 数据库
 DB_PATH = "learnforge.db"
+
+# ---------------------------------------------------------------------------
+# 受控文件工具的工作区（file.read / file.write / file.edit 的边界）
+# ---------------------------------------------------------------------------
+# 只读根：file.read / repo.search 允许读取的范围（默认 = 仓库根，纯只读安全）。
+# 可写沙箱：file.write / file.edit 真正落盘时**仅限**此目录，且需 LF_FILE_WRITE_ENABLED=1。
+#   默认不真实开放：未设环境变量时一律 dry-run（只产 diff，不落盘）。
+WORKSPACE_READ_ROOT = os.getenv("LF_WORKSPACE_READ_ROOT", str(_REPO_ROOT))
+WORKSPACE_WRITE_DIR = os.getenv("LF_WORKSPACE_WRITE_DIR", "data/workspace")
+FILE_WRITE_ENABLED = os.getenv("LF_FILE_WRITE_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 # ---------------------------------------------------------------------------
 # 记忆系统（OpenClaw 风格：MEMORY.md + daily markdown + 索引召回 + 衰减）
@@ -91,6 +104,25 @@ SESSION_PIN_MAX_CHARS = 500
 # 每折叠 N 次，做一次「全量结构化重摘」(LLM-only)：把滚动 summary 重新组织成
 # 目标/决策/未决项/主题，修正增量折叠的漂移与碎片化。离线(无 key)不触发，保持纯增量(§14-7)。
 SESSION_RESUMMARIZE_EVERY = 3
+# 阶段一：session_context 注入预算。会话记忆（pinned/summary/recent）+ 最近 tool/子 agent 投影
+# + 可引用附件，装配成**有界**的一段注入子 agent（QA/planning）的 session 槽。每段各有上限，整体
+# 再加一道全局天花板——绝不把 pinned 全文无上限塞进 prompt。
+#
+# 预算按**上下文窗口占比**派生（与 compaction 阈值同源思路），不再用保守的小绝对值：默认占窗口 5%。
+# 128K 窗口 → ≈6400 tok 作会话上下文召回面（pinned 子预算 ≈2880，足以容纳 8×500 字的全部 pin，
+# 修复了 1600 把 pinned 截半的过度保守）。换更大窗口自动放宽；`LF_SESSION_CONTEXT_RATIO` 调占比，
+# `LF_SESSION_CONTEXT_MAX_TOKENS` 直接覆盖绝对值（更省成本/更早裁剪就调小）。
+SESSION_CONTEXT_RATIO = float(os.getenv("LF_SESSION_CONTEXT_RATIO", "0.05"))
+SESSION_CONTEXT_MAX_TOKENS = int(os.getenv(
+    "LF_SESSION_CONTEXT_MAX_TOKENS",
+    str(max(2000, round(CONTEXT_LIMIT_TOKENS * SESSION_CONTEXT_RATIO)))))
+# 各段子预算 = 全局的固定比例（pinned 最高）；和略大于全局，由全局天花板兜底裁剪。
+SESSION_CONTEXT_PINNED_TOKENS = round(SESSION_CONTEXT_MAX_TOKENS * 0.45)   # 重要结果优先级最高
+SESSION_CONTEXT_SUMMARY_TOKENS = round(SESSION_CONTEXT_MAX_TOKENS * 0.18)  # 早期会话摘要
+SESSION_CONTEXT_RECENT_TOKENS = round(SESSION_CONTEXT_MAX_TOKENS * 0.30)   # 最近原文轮
+SESSION_CONTEXT_TOOLS_TOKENS = round(SESSION_CONTEXT_MAX_TOKENS * 0.06)    # 最近 tool/子 agent 投影
+SESSION_CONTEXT_ATTACH_TOKENS = round(SESSION_CONTEXT_MAX_TOKENS * 0.10)   # 可跨轮引用的附件
+SESSION_CONTEXT_RECENT_ROUNDS = 6      # 从 dialogue_turns 取多少轮算投影/附件引用
 # 记忆召回相似度闸门（仅对 cosine 相似度分数有意义，即 vector/hybrid 模式；
 # FTS 的 RRF 位置分不是相似度，不适用本闸门）。
 #   - MIN_SIM：top1 低于它 → 判“没有找到明确记忆”（不编造）。
@@ -125,6 +157,21 @@ PLAN_TIMEOUT_S = 10.0
 TOTAL_WORKFLOW_TIMEOUT_S = 60.0
 MAX_COST_PER_REQUEST_USD = 0.40
 HANDOFF_SUMMARY_MAX_TOKENS = 512  # Design §6b / Q2
+
+# 模拟面试（InterviewDirector 智能编排，替代旧 LangGraph 状态机）。
+# 高质量生成档：出题 / 解答 / 提示 / 纠错走可配置强模型；为空 → 退回 INTERVIEWER skill 的 SONNET 档。
+# 设成完整 model id（如 anthropic/claude-opus-4-…）即把这些高风险生成升到 Opus，路由/分类/评分仍走 Haiku。
+MOCK_ANSWER_MODEL = os.getenv("LF_MOCK_ANSWER_MODEL") or None
+# 每个面试环节（基础→项目→系统设计）问够多少题就推进下一环节。
+MOCK_PHASE_QUESTIONS = int(os.getenv("LF_MOCK_PHASE_QUESTIONS", "3"))
+# 连续多少轮"没在推进出题"（提示/复述/公布答案/跳过等非作答轮）→ 主动询问继续拷打还是总结收尾。
+MOCK_IDLE_ROUNDS_THRESHOLD = int(os.getenv("LF_MOCK_IDLE_ROUNDS", "3"))
+
+
+def mock_answer_model() -> Optional[str]:
+    """高质量生成（出题/解答/提示/纠错）的模型 id 覆盖；None → 用 agent skill 的 model_tier。"""
+    return MOCK_ANSWER_MODEL
+
 
 # 模型分级（Proposal §2：路由/裁判/抽取用 Haiku，合成/出题/复盘用 Sonnet）
 AGENT_MODEL_TIER: Dict[AgentId, ModelTier] = {

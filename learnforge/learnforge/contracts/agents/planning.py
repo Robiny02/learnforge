@@ -48,6 +48,8 @@ class PlanningInput(BaseModel):
     diagnosis: Optional[DiagnosisResult] = None  # required if mode == modify
     existing_path_ref: Optional[str] = None  # required if mode == modify
     user_feedback: Optional[str] = None
+    # 跨轮会话上下文（由 Manager 装配且有界）→ session 槽，让"根据刚才聊的调整计划"可承接。
+    session_context: str = ""
 
 
 class PlanningOutput(BaseModel):

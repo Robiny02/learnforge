@@ -552,7 +552,9 @@ if FastAPI is not None:
         body = _ui_chat_dispatch(req, ctx)
         _ctx_record(req.session_id, req.text or "", body)  # 回写上下文供下一轮承接/切换
         if isinstance(body, dict) and "memory" not in body:
-            body["memory"] = memory_panel_payload(req.session_id, _mgr()._db_path)
+            # 传入本轮用户输入 → 面板能如实报告 User Input 层 token（固定 8 层 Prompt Stack）。
+            body["memory"] = memory_panel_payload(
+                req.session_id, _mgr()._db_path, user_input=req.text or "")
         return body
 
     def _ui_chat_dispatch(req: UIChatRequest, ctx: Optional[dict] = None):

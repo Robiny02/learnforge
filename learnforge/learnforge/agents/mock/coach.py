@@ -92,11 +92,17 @@ class CoachAgent(BaseAgent):
             if role_type:
                 role_line = f"目标角色：{role_type}；关注点：{IS.role_focus(role_type)}\n"
         return (
-            "对一场模拟面试做终场复盘。逐轮评分：\n" + "\n".join(lines) + "\n"
+            "对一场模拟面试做终场复盘（接入 tech-interview skill 评估 rubric）。逐轮评分（0-5 档）：\n"
+            + "\n".join(lines) + "\n"
             f"覆盖话题：{payload.topic_coverage}\n{role_line}"
-            "输出 summary / strengths / weaknesses(每条带 evidence 引哪一轮) / next_steps；\n"
-            "并对高风险或低分轮给出 answer_cards：why_risky / dangerous / passable / strong / "
-            "evidence_needed（承认边界、不奖励夸大、指出该补什么证据）。"
+            "评分口径：9-10/卓越=准确且有深度能举一反三；7-8/良好=正确有深度；5-6/合格=概念对但缺深度；"
+            "3-4/不足=概念模糊有盲区；1-2/薄弱=错误或答不出（按 0-5 档折算）。\n"
+            "输出：summary（一段总体评价，直接不空泛，给推荐等级与适合岗位级别的判断）/ "
+            "strengths（说清好在哪、可在真实面试用）/ weaknesses（每条带 evidence 引哪一轮）/ "
+            "next_steps（具体可执行的改进建议）；\n"
+            "并对高风险或低分轮给出 answer_cards：why_risky / dangerous（会被问穿的回答）/ "
+            "passable（承认边界只讲真实做过的）/ strong（补样例对比/取舍）/ evidence_needed；\n"
+            "若有简历夸大/对不上的地方，在 weaknesses 里点出并给更真实的表述建议。不奖励夸大、禁止空泛肯定。"
         )
 
     @staticmethod

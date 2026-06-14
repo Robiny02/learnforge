@@ -71,10 +71,15 @@ def test_begin_memory_turn_logs_read_pipeline(mem_dir, tmp_db):
     mgr = ManagerAgent(db_path=tmp_db)
     mgr.begin_memory_turn("乐观锁和悲观锁？", "s1")
 
+    # begin_memory_turn：读取阶段——加载 MEMORY.md（注入）+ 读会话记忆（仅 READ，不在此注入）。
     s = MEMORY_LOG.summary()
     assert s["loaded_memory_md"] is True
     assert s["loaded_session"] is True
-    assert s["injected_count"] >= 2  # 稳定 + 会话
+    assert s["injected_count"] >= 1  # 稳定记忆已注入
+
+    # 会话上下文的**真实**注入发生在 execute_dynamic 的 build_session_context（不再在 begin 谎报，§7）。
+    mgr.build_session_context("s1")
+    assert MEMORY_LOG.summary()["injected_count"] >= 2  # 稳定 + 会话上下文
 
 
 def test_retrieval_local_logs_search_and_inject(mem_dir, tmp_db):

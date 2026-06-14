@@ -1,9 +1,9 @@
-"""Mock checkpoint 持久化（P0）：跨进程重启可 resume + 缺失会话优雅过期不崩。
+"""Mock 状态持久化（P0，重构后）：跨进程重启可 resume + 缺失会话优雅过期不崩。
 
-锁住：
-- 默认 SqliteSaver 把图状态落盘：新建 agent 实例（≈进程重启）能继续上一场面试。
+锁住（InterviewDirector + MockStateStore 替代旧 LangGraph checkpointer）：
+- MockState 落 SQLite（同 db_path）：新建 agent 实例（≈进程重启）能继续上一场面试。
 - 新 session_id = 开新面试，与旧会话互不干扰。
-- checkpoint 缺失（重启后用 MemorySaver / 会话不存在）→ answer 返回 status=expired，不抛 KeyError。
+- 状态缺失（不同库 / 会话不存在）→ answer 返回 status=expired，不抛异常。
 全离线、确定性。
 """
 
@@ -24,32 +24,26 @@ def _fresh_db() -> str:
 
 
 # ----------------------------------------------------------------- 跨重启恢复
-def test_interview_resumes_after_restart(tmp_db: str, monkeypatch):
-    ckpt = os.path.join(tempfile.mkdtemp(), "mock_ckpt.db")
-    monkeypatch.delenv("LF_MOCK_CHECKPOINT", raising=False)        # 关掉测试默认的 memory
-    monkeypatch.setenv("LF_MOCK_CHECKPOINT_DB", ckpt)             # 指定落盘 checkpoint 库
+def test_interview_resumes_after_restart(tmp_db: str):
     sid = "sess-persist"
 
-    # 进程 A：开场 + 答一轮，停在下一题（active）。
+    # 进程 A：开场 + 答一轮，停在下一题（active）。状态落 SQLite（tmp_db）。
     a = MockInterviewAgent(db_path=tmp_db)
-    assert a.persistent is True                                   # 确认走了 SqliteSaver
+    assert a.persistent is True                                   # 确认状态落盘
     a.run(MockInput(topic="并发", session_id=sid))
     o = a.run(MockInput(topic="并发", session_id=sid, user_answer="我用乐观锁加版本号"))
     assert o.status == "active" and o.turn_index == 1
 
-    # 进程 B：全新实例（≈重启）。同一 checkpoint 库 → 能看到中断点并继续作答。
+    # 进程 B：全新实例（≈重启）。同一 db_path → 从 MockStateStore 读回状态并继续作答。
     b = MockInterviewAgent(db_path=tmp_db)
-    assert b._has_resumable({"configurable": {"thread_id": sid}}) is True
+    assert b.store.load(sid) is not None                          # 能读回中断态
     o2 = b.run(MockInput(topic="并发", session_id=sid, user_answer="补充：CAS 自旋重试"))
     assert o2.status == "active"
     assert o2.turn_index == 2                                     # 在上一场基础上继续推进
     assert o2.question                                           # 给出了下一题
 
 
-def test_new_session_is_independent(tmp_db: str, monkeypatch):
-    ckpt = os.path.join(tempfile.mkdtemp(), "mock_ckpt.db")
-    monkeypatch.delenv("LF_MOCK_CHECKPOINT", raising=False)
-    monkeypatch.setenv("LF_MOCK_CHECKPOINT_DB", ckpt)
+def test_new_session_is_independent(tmp_db: str):
     a = MockInterviewAgent(db_path=tmp_db)
     a.run(MockInput(topic="并发", session_id="sess-A"))
     a.run(MockInput(topic="并发", session_id="sess-A", user_answer="答A"))
@@ -59,22 +53,21 @@ def test_new_session_is_independent(tmp_db: str, monkeypatch):
     assert fresh.status == "active" and fresh.turn_index == 0 and fresh.question
 
 
-# ----------------------------------------------------------------- 过期护栏（无 checkpoint）
-def test_resume_without_checkpoint_expires_gracefully(monkeypatch):
-    # 用测试默认 memory checkpointer：新 agent 看不到旧会话 → 不应崩，应 status=expired。
-    monkeypatch.setenv("LF_MOCK_CHECKPOINT", "memory")
-    a = MockInterviewAgent()
+# ----------------------------------------------------------------- 过期护栏（状态缺失）
+def test_resume_with_lost_state_expires_gracefully(tmp_db: str):
+    # 在 A 库开一场；用**另一个库**的 agent 续跑 → 读不到状态 → 优雅 expired，不崩。
+    a = MockInterviewAgent(db_path=tmp_db)
     a.run(MockInput(topic="并发", session_id="sess-lost"))
 
-    b = MockInterviewAgent()                                     # 新 MemorySaver（≈丢了 checkpoint）
+    other_db = _fresh_db()
+    b = MockInterviewAgent(db_path=other_db)                      # 不同库 ≈ 状态丢失
     out = b.run(MockInput(topic="并发", session_id="sess-lost", user_answer="继续"))
-    assert out.status == "expired"                              # 优雅过期，而不是 KeyError
+    assert out.status == "expired"                              # 优雅过期，而不是异常
     assert "重新开始" in (out.followup or "")
 
 
-def test_answer_unknown_session_does_not_crash(monkeypatch):
-    monkeypatch.setenv("LF_MOCK_CHECKPOINT", "memory")
-    m = MockInterviewAgent()
+def test_answer_unknown_session_does_not_crash(tmp_db: str):
+    m = MockInterviewAgent(db_path=tmp_db)
     out = m.run(MockInput(topic="", session_id="never-started", user_answer="hi"))
     assert out.status == "expired"
 
