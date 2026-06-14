@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from ..contracts.enums import AgentId
-from ..mcp.registry import MCP_REGISTRY
+from ..tools.registry import CAPABILITY_REGISTRY
 from .base import Skill, SkillSpec
 
 
@@ -40,12 +40,12 @@ class SkillRegistry:
     @staticmethod
     def _validate_tools(spec: SkillSpec) -> None:
         """注册期校验：allowed_tools 必须已知，且该 agent 有权声明。"""
-        unknown = [t for t in spec.allowed_tools if not MCP_REGISTRY.is_known(t, for_declaration=True)]
+        unknown = [t for t in spec.allowed_tools if not CAPABILITY_REGISTRY.is_known(t, for_declaration=True)]
         if unknown:
             raise UnknownToolError(
                 f"Skill '{spec.name}' ({spec.agent_id}) declares unknown tools: {unknown}"
             )
-        denied = [t for t in spec.allowed_tools if not MCP_REGISTRY.may_declare(t, spec.agent_id.value)]
+        denied = [t for t in spec.allowed_tools if not CAPABILITY_REGISTRY.may_declare(t, spec.agent_id.value)]
         if denied:
             raise ToolNotAllowedError(
                 f"Skill '{spec.name}' ({spec.agent_id}) may not declare tools: {denied}"

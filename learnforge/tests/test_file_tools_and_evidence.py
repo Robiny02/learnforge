@@ -19,8 +19,8 @@ from learnforge.agents.diagnosis import DiagnosisAgent
 from learnforge.agents.qa.qa_agent import QAAgent
 from learnforge.contracts.agents.evidence import EvidencePacket, EvidenceRequest
 from learnforge.contracts.enums import EvidenceSourceType
-from learnforge.mcp.base import ToolEffect
-from learnforge.mcp.registry import MCP_REGISTRY
+from learnforge.tools.spec import ToolEffect
+from learnforge.tools.registry import CAPABILITY_REGISTRY
 from learnforge.skills.base import SkillPermissionError
 from learnforge.tools.collection import TOOLS
 from learnforge.orchestration.manager import ManagerAgent
@@ -28,17 +28,17 @@ from learnforge.orchestration.manager import ManagerAgent
 
 # --------------------------------------------------------------- registry shape
 def test_file_tools_registered_with_correct_effects():
-    assert MCP_REGISTRY.is_known("file.read")
-    assert MCP_REGISTRY.is_known("file.write")
-    assert MCP_REGISTRY.is_known("file.edit")
-    assert MCP_REGISTRY.spec_for("file.read").effect.value == ToolEffect.READ.value
-    assert MCP_REGISTRY.spec_for("file.write").effect.value == ToolEffect.WRITE.value
-    assert MCP_REGISTRY.spec_for("file.edit").effect.value == ToolEffect.WRITE.value
+    assert CAPABILITY_REGISTRY.is_known("file.read")
+    assert CAPABILITY_REGISTRY.is_known("file.write")
+    assert CAPABILITY_REGISTRY.is_known("file.edit")
+    assert CAPABILITY_REGISTRY.spec_for("file.read").effect.value == ToolEffect.READ.value
+    assert CAPABILITY_REGISTRY.spec_for("file.write").effect.value == ToolEffect.WRITE.value
+    assert CAPABILITY_REGISTRY.spec_for("file.edit").effect.value == ToolEffect.WRITE.value
 
 
 def test_file_write_edit_are_audited_and_owned():
     for name in ("file.write", "file.edit"):
-        spec = MCP_REGISTRY.spec_for(name)
+        spec = CAPABILITY_REGISTRY.spec_for(name)
         assert spec.audit_required is True
         assert spec.owner_agents  # 必须有 owner（不可被任意 agent 声明）
 
@@ -46,15 +46,15 @@ def test_file_write_edit_are_audited_and_owned():
 def test_no_shell_or_exec_capability_exists():
     # 没有任何 exec/shell 类工具或 namespace。
     for name in ("exec", "shell", "bash", "shell.exec", "process.run", "exec.run"):
-        assert not MCP_REGISTRY.is_known(name), f"{name} must not exist this phase"
+        assert not CAPABILITY_REGISTRY.is_known(name), f"{name} must not exist this phase"
     # file.* 是 namespace（前缀查询会解析），但任意 file.exec 既不可声明也无 handler → 不可调用。
-    assert not MCP_REGISTRY.is_known("file.exec", for_declaration=True)
+    assert not CAPABILITY_REGISTRY.is_known("file.exec", for_declaration=True)
     assert not TOOLS.has_handler("file.exec")
 
 
 def test_evidence_source_tools_registered():
     for name in ("repo.search", "attachment.recall", "resume.recall", "agent.evidence"):
-        assert MCP_REGISTRY.is_known(name)
+        assert CAPABILITY_REGISTRY.is_known(name)
 
 
 # ------------------------------------------------------- diagnosis cannot write
@@ -84,7 +84,7 @@ def test_unauthorized_agent_file_write_is_denied(tmp_db):
 # ----------------------------------- manager sees registry but writes stay safe
 def test_manager_sees_file_registry_but_cannot_grant_write(tmp_db):
     mgr = ManagerAgent(db_path=tmp_db)
-    assert MCP_REGISTRY.is_known("file.write")  # registry 可见
+    assert CAPABILITY_REGISTRY.is_known("file.write")  # registry 可见
     with pytest.raises(SkillPermissionError):    # 但 Manager skill 未声明 → 不能调
         mgr.require_tool("file.write")
 

@@ -1,6 +1,6 @@
 """Manager 复合 workflow 5.6 + 写边界 + trace/event 埋点（Design §5.6 / §2a / §9a / §4c）。"""
 
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.contracts.enums import Status
 from learnforge.mastery import update_mastery
 from learnforge.storage.repositories import (

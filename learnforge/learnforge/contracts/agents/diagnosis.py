@@ -43,6 +43,11 @@ class DiagnosisInput(BaseModel):
     time_window: TimeWindow = TimeWindow.D30
     focus_topics: List[str] = Field(default_factory=list)
     trigger: DiagnosisTrigger = DiagnosisTrigger.USER
+    evidence_context: str = Field(
+        default="",
+        description="Manager 经 EvidenceResearchAgent 补来的只读证据摘要（artifact_text）。"
+                    "信号不足时由 need_evidence 回路注入，作为诊断的额外接地材料（不据此编造掌握度）。",
+    )
 
 
 class DiagnosisResult(BaseModel):

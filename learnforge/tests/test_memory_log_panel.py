@@ -59,7 +59,7 @@ def test_record_logs_save_then_skip_duplicate(mem_dir, tmp_db):
 
 # ---------------- 接线：begin_memory_turn 读取流水线 ----------------
 def test_begin_memory_turn_logs_read_pipeline(mem_dir, tmp_db):
-    from learnforge.agents.manager import ManagerAgent
+    from learnforge.orchestration.manager import ManagerAgent
     from learnforge.memory.files import append_root_memory
     from learnforge.memory.log import MEMORY_LOG
     from learnforge.storage.repositories import SessionStateRepository

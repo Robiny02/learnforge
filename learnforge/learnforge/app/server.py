@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - FastAPI 可选
     FileResponse = None  # type: ignore
     StaticFiles = None  # type: ignore
 
-from ..agents.manager import ManagerAgent
+from ..orchestration.manager import ManagerAgent
 from ..contracts.agents.qa import QAInput
 from ..contracts.agents.mock import MockInput
 from ..contracts.enums import Status

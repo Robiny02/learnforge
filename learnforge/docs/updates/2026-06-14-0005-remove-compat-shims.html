@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0005 · 删除历史兼容 shim</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>删除历史兼容 shim：mcp/ 与 agents/manager.py</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 6→7</span>
+      <span class="badge type">refactor</span>
+      <span class="badge risk-med">risk · med</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0005 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>清理 Phase 2 标记的历史迁移 debris（边界 B1/B5）：两个纯转发的兼容 shim 包 —— <code>mcp/</code>
+       与 <code>agents/manager.py</code>。它们只是把 import 转发到真实模块，留着徒增“同名多处”的困惑。
+       本次把所有 importer 直接改指实现层，再删 shim。</p>
+
+    <h2>变更内容</h2>
+    <h3>① 删除 <code>mcp/</code> 整包（base/registry/tools/__init__）</h3>
+    <ul>
+      <li><code>mcp.registry</code> → <code>tools.registry</code>：<code>agents/base.py</code>、<code>skills/registry.py</code>。</li>
+      <li><code>mcp.tools</code> → <code>tools.openai_bridge</code>：<code>agents/{qa,diagnosis,react}</code>、
+          <code>integrations/{gpt_image,notion,report}.py</code>。</li>
+      <li>测试 4 处 <code>mcp.base/registry</code> → <code>tools.spec/registry</code>。</li>
+    </ul>
+    <h3>② 删除 <code>agents/manager.py</code> shim</h3>
+    <ul>
+      <li>5 个源文件 + 11 个测试文件的 <code>from …agents.manager import ManagerAgent</code> → <code>orchestration.manager</code>。</li>
+      <li><code>agents/__init__.py</code> 的惰性 <code>__getattr__("ManagerAgent")</code> 与 TYPE_CHECKING 改指
+          <code>orchestration.manager</code>——<code>learnforge.agents.ManagerAgent</code> 仍可用，且仍惰性加载（打破
+          agents ↔ orchestration 的 import 环）。</li>
+    </ul>
+    <p>共 <strong>~21 个 import 点</strong>改指 + 删 2 个 shim 包。<code>NextStep</code> 早已从
+       <code>orchestration.manager</code> 取，不受影响。</p>
+
+    <div class="callout warn">
+      未删 <code>graph/main_graph.py</code>：它转发 <code>orchestration.graph</code>，但
+      <code>python -m learnforge.graph.main_graph</code> 是 CLAUDE.md 记录的 smoke 入口——是合法别名而非 debris，<strong>保留</strong>。
+      <code>tools/runtime.py</code> 的 <code>ToolRegistry/DEFAULT_TOOL_REGISTRY</code> facade 留待 Phase 6 收口。
+    </div>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="mod">－ learnforge/mcp/（整包删除）</span><br>
+      <span class="mod">－ learnforge/agents/manager.py（删除）</span><br>
+      <span class="mod">～ agents/base.py、agents/__init__.py、skills/registry.py、agents/{qa,diagnosis,react}、integrations×3（import 改指）</span><br>
+      <span class="mod">～ cli.py、app/server.py、eval×2、memory/demo_panel.py（import 改指）</span><br>
+      <span class="mod">～ 测试 ×13（import 改指 tools.* / orchestration.manager）</span><br>
+      <span class="mod">～ docs/architecture/cleanup-manifest.md（标记两项 ✅ done）</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>import 冒烟：重定向模块全部 import OK；<code>learnforge.agents.ManagerAgent</code> 解析到
+          <code>orchestration.manager</code>。</li>
+      <li>全量：<strong>633 passed, 11 skipped</strong>，零回归；<code>ruff check</code> 改动文件全 clean。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>纯 import 路径替换（like-for-like），无运行期行为变化。回滚 = <code>git checkout</code> 恢复
+       <code>mcp/</code> 与 <code>agents/manager.py</code> 并还原 import 行。</p>
+
+    <h2>下一步</h2>
+    <p>Phase 4（EvidenceProvider 收敛）/ Phase 5（接通 EvidenceResearchAgent 的 <code>need_evidence</code> 回路）。
+       Phase 6 余项：<code>MCP_REGISTRY</code> 改名 <code>CAPABILITY_REGISTRY</code>、<code>tools/runtime</code> facade 收口。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

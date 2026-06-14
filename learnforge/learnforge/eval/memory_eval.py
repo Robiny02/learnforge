@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from ..agents.manager import ManagerAgent
+from ..orchestration.manager import ManagerAgent
 from ..agents.retrieval import RetrievalAgent
 from ..contracts.agents.retrieval import RetrievalFilters, RetrievalInput
 from ..contracts.enums import KnowledgeScope, RetrievalMethod

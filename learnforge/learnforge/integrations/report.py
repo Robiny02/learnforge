@@ -164,7 +164,7 @@ _PARAMS = {
 
 
 def register() -> None:
-    from ..mcp import tools as toolmod
+    from ..tools import openai_bridge as toolmod
 
     if not toolmod.has_handler("report.generate"):
         toolmod.register_tool("report.generate", report_generate_handler, parameters=_PARAMS,

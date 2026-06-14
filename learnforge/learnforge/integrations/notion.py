@@ -138,7 +138,7 @@ _NOTION_PARAMS = {
 
 def register() -> None:
     """把 notion.sync 注册进运行时工具表（幂等）。"""
-    from ..mcp import tools as toolmod
+    from ..tools import openai_bridge as toolmod
 
     if not toolmod.has_handler("notion.sync"):
         toolmod.register_tool(

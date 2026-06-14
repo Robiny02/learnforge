@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0001 · 轻量 DDD 重构方案</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>轻量 DDD + 可插拔 Handler 重构方案</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 0</span>
+      <span class="badge docs">docs</span>
+      <span class="badge risk-low">risk · none</span>
+    </div>
+    <p class="meta">#0001 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>LearnForge 已是 <strong>orchestrator + tools</strong> 架构，但随能力增多，几处边界开始混乱：
+       Manager 成了上帝对象、新增能力必须改 <code>_dispatch_impl</code> 的硬编码 if/elif、证据/产物/控制信号
+       靠无类型的 <code>context</code> / <code>meta</code> dict 传递、工具注册表命名重叠。本次产出一份
+       <strong>轻量 DDD + 可插拔 Handler</strong> 的重构方案，先统一接口与边界，<em>不</em>做企业级重分层。</p>
+
+    <h2>变更内容</h2>
+    <p>新增架构文档 <a href="../architecture/refactor-plan.md">docs/architecture/refactor-plan.md</a>，含：</p>
+    <ul>
+      <li><strong>边界审查</strong>：识别 5 处最混乱边界（三 registry + 两 descriptor 命名地狱、Manager 上帝对象、
+          路由散在 4 处、<code>ResponsePayload.result</code> 不透明 + 旁路 dict、并行轨道未隔离）。</li>
+      <li><strong>关键发现</strong>：<code>EvidenceResearchAgent</code> + <code>Manager.gather_evidence</code> 已完整实现，
+          但除测试外<strong>从未被真实调用</strong> —— 统一只读证据 worker 是半成品（Phase 5 补接）。</li>
+      <li><strong>三类可插拔 Handler</strong>：<code>CapabilityHandler</code>（QA/Diagnosis/Planning/Mock/Evidence）、
+          <code>EvidenceProviderHandler</code>（resume/repo/file/attachment/retrieval）、
+          <code>ToolHandler</code>（file/mcp/local 统一注册 + 权限闸）。</li>
+      <li><strong>统一 AgentResult</strong>：让 Manager 只读 status / payload / evidence_refs / artifact_refs /
+          next_request / reason 即可编排。</li>
+      <li><strong>8 阶段迁移计划</strong>（Phase 0–7）+ 每阶段测试 + 风险/回滚表。</li>
+    </ul>
+
+    <h2>涉及文件</h2>
+    <p class="files"><span class="new">＋ docs/architecture/refactor-plan.md（新增）</span></p>
+
+    <h2>测试</h2>
+    <p>纯文档，无代码变更，无需测试。现有 <code>pytest</code> 基线不受影响。</p>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>零代码、零行为影响。回滚 = 删除该文档。</p>
+    <div class="callout">
+      重构原则（贯穿全程）：不大爆炸、不先搬文件、不改业务行为、不破坏测试、子 Agent 不互调、
+      Diagnosis 不提权、Planning 不直写 path、Evidence 本体不进 Conversation State、不引入 shell/exec。
+    </div>
+
+    <h2>下一步</h2>
+    <p>Phase 1 — 纯加法引入核心契约（见 <a href="2026-06-14-0002-phase1-core-contracts.html">#0002</a>）。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

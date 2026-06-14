@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0004 · 注册表分发接线</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>Manager 经注册表分发 · 清理旧的硬编码派发</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 3</span>
+      <span class="badge type">refactor</span>
+      <span class="badge risk-med">risk · med</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0004 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>这是第一个真正<strong>动 Manager</strong> 的阶段。把 <code>_dispatch_impl</code> 里硬编码的
+       <code>if agent=="qa"/"diagnosis"/"planning"/"mock"</code> 四段派发（边界 B2 的核心痛点），改成经
+       Phase 2 的 <code>HandlerRegistry</code> 分发——<strong>新增能力 = 注册一个 handler，不再改 Manager 主循环</strong>。
+       要求行为字节级不变。</p>
+
+    <h2>变更内容</h2>
+    <ul>
+      <li>新增 <code>orchestration/capability_handlers.py</code>：四个 <code>CapabilityHandler</code>
+          （QA/Diagnosis/Planning/Mock），把对应分支的<strong>全部逻辑与副作用原样搬入</strong>
+          （emit_qa_signal / persist_diagnosis / remember / 简历子路由 / status 映射），产 <code>AgentResult</code>。</li>
+      <li>ManagerAgent 构造时 <code>build_default_handlers(self)</code> 注册四能力到<strong>实例私有</strong>注册表
+          （非全局单例，避免多 Manager 串扰）。</li>
+      <li><code>_dispatch_impl</code> 从 ~60 行 if/elif 缩成 <strong>10 行查表分发</strong>：
+          <code>handler.run(...).to_response_payload()</code>，对下游 <code>ResponsePayload</code> 字节级等价。</li>
+      <li>顺手清掉因此空出的 4 个 import（QAInput / PlanningInput / PlanMode / DiagnosisResult）。
+          <code>manager.py</code> 1316 → 1269 行。</li>
+    </ul>
+
+    <div class="callout good">
+      唯一写者不变：handler 只读子 agent + 调用 Manager 既有的写/记忆/埋点方法，自己不落 mastery/path。
+      Diagnosis 仍严格只读（<code>test_diagnosis_is_read_only</code> 守护）。
+    </div>
+
+    <h2>怎么证明“没改行为”</h2>
+    <p>先抓<strong>黄金回归</strong> <code>tests/test_dispatch_golden.py</code>：在改之前锁住
+       <code>dispatch()</code> 对四能力的 status / confidence / reason / result 关键字段（离线 stub 确定性），
+       改完必须逐字段一致。</p>
+    <table>
+      <tr><th>能力</th><th>status</th><th>confidence</th><th>result 关键键</th></tr>
+      <tr><td>qa</td><td>ok</td><td>0.5</td><td>answer / citations / confidence / topic / verdict</td></tr>
+      <tr><td>diagnosis</td><td>ok</td><td>~0.55</td><td>clusters / weak_atoms / recommendations / confidence</td></tr>
+      <tr><td>planning</td><td>ok</td><td>0.6</td><td>diff / status</td></tr>
+      <tr><td>mock</td><td>ok</td><td>0.5</td><td>status=active / question / turn_scores …</td></tr>
+    </table>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="new">＋ learnforge/orchestration/capability_handlers.py（四个 handler）</span><br>
+      <span class="new">＋ tests/test_dispatch_golden.py（6 用例 · 黄金回归）</span><br>
+      <span class="mod">～ learnforge/orchestration/manager.py（接线 + _dispatch_impl 瘦身 + 清 4 import）</span><br>
+      <span class="mod">～ docs/architecture/cleanup-manifest.md（标记 if/elif 派发 ✅ done）</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>黄金回归 6 passed；<code>test_manager_composite</code>/<code>test_agent_capabilities</code> 全绿。</li>
+      <li>全量：<strong>633 passed, 11 skipped</strong>（627 + 6 黄金），零回归。</li>
+      <li><code>ruff check</code> 新增/改动文件全 clean。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>风险 med（首次动 Manager 派发）。但逻辑“搬运非重写”+ 黄金回归兜底，行为等价。
+       回滚 = 还原 <code>_dispatch_impl</code> 的 if/elif、删 <code>capability_handlers.py</code>（单 commit revert）。</p>
+
+    <h2>下一步 / 尚未清理</h2>
+    <p>本次清掉的是<strong>本重构产生的旧架构</strong>（Manager 硬编码派发）。仍待清理的是<strong>历史迁移 shim</strong>
+       （<code>mcp/</code>、<code>agents/manager.py</code>）——属 Phase 6/7，删除需 redirect 16+ import 点（含 11 个测试文件），
+       是单独一轮机械改动，按计划不与本阶段混做（避免大爆炸）。清单见
+       <a href="../architecture/cleanup-manifest.md">cleanup-manifest</a>。</p>
+    <p>另:Phase 4（EvidenceProvider 收敛）、Phase 5（接通 EvidenceResearchAgent 的 need_evidence 回路）待做。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

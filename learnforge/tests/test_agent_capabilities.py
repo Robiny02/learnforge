@@ -10,8 +10,8 @@ from learnforge.contracts.agents.diagnosis import DiagnosisInput
 from learnforge.agents.qa.qa_agent import QAAgent
 from learnforge.contracts.agents.qa import QAInput, RouterOutput, SynthesizerOutput
 from learnforge.contracts.enums import AgentId, ModelTier, QType
-from learnforge.mcp.base import ToolEffect
-from learnforge.mcp.registry import MCP_REGISTRY
+from learnforge.tools.spec import ToolEffect
+from learnforge.tools.registry import CAPABILITY_REGISTRY
 from learnforge.skills.bootstrap import ensure_skills_registered
 from learnforge.skills.base import Skill, SkillPermissionError, SkillSpec
 from learnforge.skills.registry import (
@@ -129,7 +129,7 @@ def test_all_default_skill_tools_are_registered():
         skill = SKILL_REGISTRY.primary(agent_id)
         assert skill is not None
         for tool in skill.spec.allowed_tools:
-            assert MCP_REGISTRY.is_known(tool), f"{agent_id}: unknown tool '{tool}'"
+            assert CAPABILITY_REGISTRY.is_known(tool), f"{agent_id}: unknown tool '{tool}'"
 
 
 def test_registering_skill_with_unknown_tool_is_rejected():
@@ -172,7 +172,7 @@ def test_broad_write_namespace_is_not_declarable():
 
 
 def test_write_capabilities_have_owners_and_audit_enabled():
-    write_tools = MCP_REGISTRY.write_tools()
+    write_tools = CAPABILITY_REGISTRY.write_tools()
     assert write_tools
     for spec in write_tools:
         if spec.is_namespace:

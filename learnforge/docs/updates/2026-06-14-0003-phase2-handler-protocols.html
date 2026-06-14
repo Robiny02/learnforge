@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0003 · Handler 协议与注册表</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>可插拔 Handler 协议 + 空注册表 · 标记清理文件</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 2</span>
+      <span class="badge type">contracts</span>
+      <span class="badge risk-low">risk · low</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0003 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>Phase 1 已落地统一结果契约 <code>AgentResult</code>。Phase 2 在其上定义三类<strong>可插拔 Handler 的接口</strong>，
+       为后续“新增能力不必改 Manager 主循环”打地基。本阶段<strong>只给接口与空注册表，不接入任何现有 Agent</strong>
+       （行为零变化）。同时按你的要求，把未来要清理 / 收敛的文件统一<strong>打标记</strong>。</p>
+
+    <h2>变更内容</h2>
+    <ul>
+      <li><strong>三个 Protocol</strong>（<code>contracts/handlers.py</code>，<code>runtime_checkable</code>）：
+        <ul>
+          <li><code>CapabilityHandler</code> —— <code>capability</code> + <code>run(request, context) → AgentResult</code>。
+              QA/Diagnosis/Planning/Mock/EvidenceResearch 的统一执行面。</li>
+          <li><code>EvidenceProviderHandler</code> —— <code>source_type</code> + <code>fetch(query, targets, context) → List[EvidenceRef]</code>。
+              resume/repo/file/attachment/retrieval 的只读读取面（回指针+片段，非全文）。</li>
+          <li><code>ToolHandler</code> —— <code>name</code> + <code>effect</code> + <code>__call__(arguments) → ToolResult</code>。
+              file/mcp/local 工具的统一调用面。</li>
+        </ul>
+      </li>
+      <li><strong>空注册表</strong> <code>HandlerRegistry</code>（<code>orchestration/handler_registry.py</code>）：
+          <code>register/get/has/capabilities</code>，容忍 <code>str</code> 或 <code>Capability</code>，未知值安全返回 None。
+          进程内单例 <code>HANDLER_REGISTRY</code> <strong>默认空、未接入 Manager</strong>。</li>
+      <li>从 <code>learnforge.contracts</code> 追加导出三个协议（加法）。</li>
+    </ul>
+
+    <div class="callout">
+      分层取舍：协议放 domain（<code>contracts/</code>），其中 <code>ToolHandler</code> 对 <code>ToolResult</code> 的引用走
+      <code>TYPE_CHECKING</code>（运行期不导入，无 contracts→tools 循环）。<code>ToolResult</code> 将在 Phase 6 提升进
+      domain，届时移除该临时引用。
+    </div>
+
+    <h2>标记未来要清理的文件</h2>
+    <p>新增清单 <a href="../architecture/cleanup-manifest.md">docs/architecture/cleanup-manifest.md</a>，并在源码里打
+       <code>LF-CLEANUP</code> 标记，一键查全：</p>
+    <pre><code>grep -rn "LF-CLEANUP" learnforge --include="*.py"</code></pre>
+    <table>
+      <tr><th>文件</th><th>类别</th><th>清理动作</th><th>Phase</th></tr>
+      <tr><td><code>agents/manager.py</code></td><td>兼容 shim</td><td>importer 改指 orchestration.manager → 删</td><td>6→7</td></tr>
+      <tr><td><code>mcp/</code>(整包)</td><td>兼容 shim</td><td>redirect 到 tools.* → 删 mcp/</td><td>6→7</td></tr>
+      <tr><td><code>graph/main_graph.py</code></td><td>兼容 shim</td><td>import 改指实现层</td><td>6</td></tr>
+      <tr><td><code>tools/runtime.py::ToolRegistry/DEFAULT_TOOL_REGISTRY</code></td><td>facade</td><td>并入 collection.TOOLS（保留 ToolRuntime）</td><td>6</td></tr>
+      <tr><td><code>tools/registry.py::MCP_REGISTRY</code></td><td>命名</td><td>改名 CAPABILITY_REGISTRY（留别名）</td><td>6</td></tr>
+    </table>
+    <p>清单另含:旁路 dict / <code>ResponsePayload</code> 旧字段(Phase 7)、半成品待接线(evidence/research，Phase 4–5)、
+       并行轨道 <code>orchestrator/</code>(本次不动,仅记录)。</p>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="new">＋ learnforge/contracts/handlers.py（三个 Protocol）</span><br>
+      <span class="new">＋ learnforge/orchestration/handler_registry.py（HandlerRegistry + 单例）</span><br>
+      <span class="new">＋ tests/test_handler_registry.py（7 用例）</span><br>
+      <span class="new">＋ docs/architecture/cleanup-manifest.md（清理清单）</span><br>
+      <span class="mod">～ learnforge/contracts/__init__.py（追加导出）</span><br>
+      <span class="mod">～ LF-CLEANUP 标记 ×6：agents/manager.py、mcp/{base,registry,tools}.py、tools/runtime.py、graph/main_graph.py（仅注释）</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>新增 <code>test_handler_registry.py</code>：协议 <code>runtime_checkable</code> 校验、注册/取用/str 规整/未知值/覆盖、
+          单例 Phase 2 为空 —— 7 passed。</li>
+      <li>全量：<strong>627 passed, 11 skipped</strong>（620 + 7 新），无回归。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>纯加法 + 仅注释标记，行为零变化（注册表未接入 Manager，仍走原 <code>_dispatch_impl</code>）。
+       回滚 = 删 <code>handlers.py</code>/<code>handler_registry.py</code>/测试/清单，撤回导出与 6 处注释。</p>
+
+    <h2>下一步</h2>
+    <p>Phase 3 — 在 ManagerAgent 构造时把 QA/Diagnosis/Planning/Mock 注册进 <code>HANDLER_REGISTRY</code>，
+       把 <code>_dispatch_impl</code> 四段 if/elif 改成 <code>registry.get(cap).run(...)</code>，<strong>行为字节级不变</strong>
+       （先抓黄金快照基线）。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

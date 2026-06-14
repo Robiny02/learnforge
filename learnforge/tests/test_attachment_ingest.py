@@ -147,7 +147,7 @@ def test_server_attachment_ingests_and_records_artifact(tmp_db, monkeypatch):
     monkeypatch.setattr(client.LLM, "available", False, raising=False)
 
     from learnforge.app import server
-    from learnforge.agents.manager import ManagerAgent
+    from learnforge.orchestration.manager import ManagerAgent
     # 把全局 manager 指到 tmp_db，避免污染默认库，并让入库/会话账本都落 tmp_db。
     monkeypatch.setattr(server, "_manager", ManagerAgent(db_path=tmp_db), raising=False)
 

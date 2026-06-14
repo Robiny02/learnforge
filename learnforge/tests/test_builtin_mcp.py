@@ -1,6 +1,6 @@
 import json
 
-from learnforge.mcp.registry import MCP_REGISTRY
+from learnforge.tools.registry import CAPABILITY_REGISTRY
 from learnforge.tools.mcp.config import load_descriptors
 from learnforge.tools.mcp.servers import web
 
@@ -26,7 +26,7 @@ def test_builtin_mcp_tools_are_registered_for_skills():
         "mcp.github.list_tree",
         "mcp.github.read_file",
     ]:
-        spec = MCP_REGISTRY.get(name)
+        spec = CAPABILITY_REGISTRY.get(name)
         assert spec is not None
         assert spec.effect.value == "external"
         assert spec.audit_required

@@ -83,7 +83,7 @@ def test_append_root_memory_writes_and_dedups(mem_dir):
 
 
 def test_maybe_remember_rule_only_on_explicit_trigger(mem_dir):
-    from learnforge.agents.manager import ManagerAgent
+    from learnforge.orchestration.manager import ManagerAgent
 
     mgr = ManagerAgent()
     # 明确"记住…"→ 写入并抽取规则正文。
@@ -98,7 +98,7 @@ def test_maybe_remember_rule_only_on_explicit_trigger(mem_dir):
 
 # ---------------- G3：decision/progress 写入 daily ----------------
 def test_remember_decision_and_progress(mem_dir, tmp_db):
-    from learnforge.agents.manager import ManagerAgent
+    from learnforge.orchestration.manager import ManagerAgent
 
     mgr = ManagerAgent(db_path=tmp_db)
     assert mgr.remember_decision("学习路径已调整（modify）。") is not None

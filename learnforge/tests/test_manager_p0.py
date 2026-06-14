@@ -7,7 +7,7 @@
 - diagnosis_reports 落库（dispatch / settle_mock 后由 Manager 单点写）
 """
 
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.contracts.agents.mock import MockOutput, Score
 from learnforge.contracts.agents.planning import PathDiff, PathItem, ReorderOp
 from learnforge.contracts.enums import Status

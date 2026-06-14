@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from learnforge import config
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.agents.qa.synthesizer import SynthesizerAgent
 from learnforge.contracts.agents.qa import QAInput, SynthesizerInput
 from learnforge.contracts.dialogue import DialogueTurn, ToolCall

@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from learnforge import config
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.contracts.agents.retrieval import RetrievalFilters, RetrievalInput
 from learnforge.contracts.enums import KnowledgeScope, RetrievalMethod
 from learnforge.memory.daily import reindex

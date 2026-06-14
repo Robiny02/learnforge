@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.orchestration.planner import _PlanDraft, build_plan
 
 

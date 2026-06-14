@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新日志</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="brand"><span class="dot"></span>LearnForge</span>
+    <h1>更新日志</h1>
+    <p class="subtitle">系统演进记录。每次更新一份 HTML，最新在上。规划见
+      <a href="../architecture/refactor-plan.md">架构重构方案</a>。</p>
+  </header>
+
+  <!-- 新增更新：复制 _template.html → 新文件，并在此最上方插入一张 .card。约定见 README.md。 -->
+  <main class="entries">
+
+    <a class="card" href="2026-06-14-0007-capability-registry-rename.html">
+      <div class="row">
+        <span class="seq">#0007 · Phase 6</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>命名收敛：MCP_REGISTRY → CAPABILITY_REGISTRY</h3>
+      <p>把误名为 MCP 的内部能力权限目录更名为 CapabilityRegistry（留兼容别名），第一方代码全改指新名。
+         源码内 LF-CLEANUP 标记清零。639 passed。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 6</span>
+        <span class="badge type">refactor</span>
+        <span class="badge risk-low">risk · low</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0006-phase4-5-evidence-wiring.html">
+      <div class="row">
+        <span class="seq">#0006 · Phase 4+5</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>EvidenceProvider 收敛 + 接通 need_evidence 回路</h3>
+      <p>读取路径收敛成可插拔 provider；把悬空的 EvidenceResearchAgent 真正接进诊断——信号不足回
+         need_evidence，Manager 调统一只读 worker 补证据再复诊。只读保持，639 passed。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 4+5</span>
+        <span class="badge type">feature</span>
+        <span class="badge risk-med">risk · med</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0005-remove-compat-shims.html">
+      <div class="row">
+        <span class="seq">#0005 · Phase 6→7</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>删除历史兼容 shim：mcp/ 与 agents/manager.py</h3>
+      <p>把 ~21 个 import 点改指实现层（tools.* / orchestration.manager），删除两个纯转发的 shim 包。
+         like-for-like 路径替换，无行为变化。633 passed。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 6→7</span>
+        <span class="badge type">refactor</span>
+        <span class="badge risk-med">risk · med</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0004-phase3-registry-dispatch.html">
+      <div class="row">
+        <span class="seq">#0004 · Phase 3</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>Manager 经注册表分发 · 清理旧的硬编码派发</h3>
+      <p>把 _dispatch_impl 的四段 if/elif 改成 HandlerRegistry 分发，逻辑搬入 capability_handlers。
+         先抓黄金回归再改，行为字节级不变。manager.py 1316→1269 行，633 passed。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 3</span>
+        <span class="badge type">refactor</span>
+        <span class="badge risk-med">risk · med</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0003-phase2-handler-protocols.html">
+      <div class="row">
+        <span class="seq">#0003 · Phase 2</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>可插拔 Handler 协议 + 空注册表 · 标记清理文件</h3>
+      <p>定义 CapabilityHandler / EvidenceProviderHandler / ToolHandler 三个 Protocol 与空注册表
+         （未接线、零行为变化）。新增 cleanup-manifest，源码打 LF-CLEANUP 标记。627 passed。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 2</span>
+        <span class="badge type">contracts</span>
+        <span class="badge risk-low">risk · low</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0002-phase1-core-contracts.html">
+      <div class="row">
+        <span class="seq">#0002 · Phase 1</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>核心契约：AgentResult / ArtifactRef / NextRequest</h3>
+      <p>纯加法引入统一结果契约与双向 adapter，收编 Manager 的 result/context/meta 旁路 dict。
+         零调用方改动、零行为变化，全测试绿（620 passed）。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 1</span>
+        <span class="badge type">contracts</span>
+        <span class="badge risk-low">risk · low</span>
+        <span class="badge ok">tests · green</span>
+      </div>
+    </a>
+
+    <a class="card" href="2026-06-14-0001-phase0-architecture-plan.html">
+      <div class="row">
+        <span class="seq">#0001 · Phase 0</span>
+        <span class="date">2026-06-14</span>
+      </div>
+      <h3>轻量 DDD + 可插拔 Handler 重构方案</h3>
+      <p>代码边界审查 + 8 阶段重构计划：CapabilityHandler / EvidenceProviderHandler / ToolHandler
+         三类可插拔抽象，统一 AgentResult，收敛证据读取路径。仅文档，不改代码。</p>
+      <div class="badges">
+        <span class="badge phase">Phase 0</span>
+        <span class="badge docs">docs</span>
+        <span class="badge risk-low">risk · none</span>
+      </div>
+    </a>
+
+  </main>
+
+  <footer>
+    新增条目：<code>cp _template.html 2026-MM-DD-NNNN-slug.html</code>，填好后在本页顶部加一张
+    <code>&lt;a class="card"&gt;</code>。详见 <a href="README.md">README.md</a>。
+  </footer>
+
+</div>
+</body>
+</html>

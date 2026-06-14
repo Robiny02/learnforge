@@ -16,7 +16,7 @@ from ..contracts.message import TokenUsage
 from ..llm.client import LLM, LLMStructuredError, LLMUnavailable
 from ..memory.base import MEMORY
 from ..memory.context_assembler import assemble_prompt
-from ..mcp.registry import MCP_REGISTRY
+from ..tools.registry import CAPABILITY_REGISTRY
 from ..skills.base import Skill, SkillPermissionError
 from ..skills.bootstrap import ensure_skills_registered
 from ..skills.registry import SKILL_REGISTRY
@@ -192,7 +192,7 @@ class BaseAgent:
         return self.tool_runtime.call(tool_name, dict(arguments or {}))
 
     def _audit_tool(self, tool_name: str, allowed: bool) -> None:
-        spec = MCP_REGISTRY.spec_for(tool_name)
+        spec = CAPABILITY_REGISTRY.spec_for(tool_name)
         self.permission_audit.append(
             {
                 "agent_id": self.agent_id.value,

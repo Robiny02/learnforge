@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from learnforge import config
-from learnforge.agents.manager import ManagerAgent
+from learnforge.orchestration.manager import ManagerAgent
 from learnforge.memory.base import MEMORY
 from learnforge.storage.repositories import SessionStateRepository
 

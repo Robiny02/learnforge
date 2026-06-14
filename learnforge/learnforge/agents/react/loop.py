@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ...llm.client import LLM, LLMUnavailable
-from ...mcp import tools as toolmod
+from ...tools import openai_bridge as toolmod
 
 
 @dataclass
