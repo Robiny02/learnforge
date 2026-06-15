@@ -92,13 +92,13 @@ class ToolCollection:
         return {"result": out}
 
     def to_openai_tools(self, names: List[str]) -> List[dict]:
-        from .registry import MCP_REGISTRY
+        from .registry import CAPABILITY_REGISTRY
 
         out: List[dict] = []
         for name in names:
             if name not in self.handlers and name not in self.params:
                 continue
-            spec = MCP_REGISTRY.spec_for(name)
+            spec = CAPABILITY_REGISTRY.spec_for(name)
             desc = self.descs.get(name) or (spec.description if spec else "") or name
             out.append({"type": "function", "function": {
                 "name": safe_name(name), "description": desc,

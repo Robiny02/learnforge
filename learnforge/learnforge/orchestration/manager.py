@@ -20,19 +20,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel
 
 from ..config import HANDOFF_SUMMARY_MAX_TOKENS
-from ..contracts.agents.diagnosis import DiagnosisInput, DiagnosisResult
+from ..contracts.agents.diagnosis import DiagnosisInput
 from ..contracts.agents.mock import InterviewContext, MockInput
-from ..contracts.agents.planning import PathDiff, PathItem, PlanningInput
-from ..contracts.agents.qa import QAInput
+from ..contracts.agents.planning import PathDiff, PathItem
 from ..contracts.enums import (
     AgentId,
     DiagnosisTrigger,
     EventType,
-    PlanMode,
     Status,
     TimeWindow,
 )
 from ..contracts.message import ContextEnvelope, EventPayload, ResponsePayload
+from ..contracts.result import NextRequest, NextRequestKind
 from ..contracts.state import LearningPath, UserProfile
 from ..memory.base import MEMORY
 from ..memory.log import INJECT, MAINTAIN, READ, WRITE, MEMORY_LOG
@@ -86,6 +85,10 @@ class ManagerAgent(BaseAgent):
         self.diagnosis = DiagnosisAgent(db_path=db_path)
         self.mock = MockInterviewAgent(db_path=db_path)
         self.evidence = EvidenceResearchAgent(db_path=db_path)
+        # 可插拔能力分发（Phase 3）：Capability → CapabilityHandler。新增能力=注册一个 handler，
+        # 不再改 _dispatch_impl 的 if/elif。handler 绑定到本 Manager 实例（私有表，非全局单例）。
+        from .capability_handlers import build_default_handlers
+        self._handlers = build_default_handlers(self)
 
     # ---------------- ReAct 兜底意图（仅 LLM 不可用时用，不预拆 DAG）----------------
     @staticmethod
@@ -143,65 +146,49 @@ class ManagerAgent(BaseAgent):
         return resp
 
     def _dispatch_impl(self, agent: str, user_input: str, context: Dict[str, Any]) -> ResponsePayload:
-        if agent == "qa":
-            # 阶段一：把有界的会话上下文（pinned/summary/recent/最近调用/附件引用）注入 QA prompt。
-            out = self.qa.run(QAInput(question=user_input,
-                                      session_context=context.get("session_context", "")))
-            self._emit_qa_signal(out)
-            self.remember_qa(user_input, out)
-            return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.qa.last_cost_usd,
-                                   reason=self._reason_for("qa", out))
-        if agent == "diagnosis":
-            # 简历诊断子路由（用户单独要求诊断简历时）：与学习弱点诊断区分开。
-            # 复合"准备面试"仍走弱点诊断（trigger=composite），不在此分流。
-            from ..agents.diagnosis.resume import looks_like_resume_request
-            if not context.get("composite") and looks_like_resume_request(user_input):
-                return self._dispatch_resume_diagnosis(user_input, context)
-            trigger = DiagnosisTrigger.COMPOSITE if context.get("composite") else DiagnosisTrigger.USER
-            out = self.diagnosis.run(DiagnosisInput(time_window=TimeWindow.D30, trigger=trigger))
-            self._persist_diagnosis(out.model_dump(), TimeWindow.D30.value, trigger.value,
-                                    out.confidence, context.get("trace_id"))
-            return ResponsePayload(status=Status.OK, confidence=out.confidence,
-                                   result=out.model_dump(), cost_usd=self.diagnosis.last_cost_usd,
-                                   reason=self._reason_for("diagnosis", out))
-        if agent == "planning":
-            diag = context.get("diagnosis")
-            sctx = context.get("session_context", "")
-            if diag is not None:
-                pin = PlanningInput(
-                    mode=PlanMode.MODIFY,
-                    diagnosis=DiagnosisResult(**diag),
-                    existing_path_ref=context.get("existing_path_ref", "current"),
-                    user_feedback=user_input,
-                    session_context=sctx,
-                )
-            else:
-                pin = PlanningInput(mode=PlanMode.GENERATE, goal=user_input, session_context=sctx)
-            out = self.planning.run(pin)
-            conf = 0.6 if out.status == Status.OK else 0.3
-            if out.status == Status.OK:
-                # 学习路径生成/调整是阶段性项目决策 → 沉淀到 daily（kind=decision，R6.4）。
-                verb = "调整" if pin.mode == PlanMode.MODIFY else "生成"
-                self.remember_decision(f"学习路径已{verb}（{pin.mode.value}）。")
-            return ResponsePayload(status=out.status, confidence=conf,
-                                   result=out.model_dump(), cost_usd=self.planning.last_cost_usd,
-                                   reason=self._reason_for("planning", out))
-        if agent == "mock":
-            # 调用方可在 context["interview_context"] 显式传岗位/JD/简历/项目；否则由统一意图层
-            # 从自然语言抽取（"我面 RAG 实习，拿我项目拷打我" → InterviewContext + 难度/轮次）。
-            ic = context.get("interview_context")
-            mi = MockInput(topic=user_input, session_id=context.get("mock_session_id"))
-            if ic is not None:
-                mi.context = InterviewContext(**ic) if isinstance(ic, dict) else ic
-            else:
-                self._enrich_mock_from_intent(mi, user_input)
-            out = self.mock.run(mi)
-            status = Status.ESCALATE if out.status == "escalate" else Status.OK
-            return ResponsePayload(status=status, confidence=0.5, result=out.model_dump(),
-                                   reason=self._reason_for("mock", out))
-        return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
-                               error={"code": "unknown_agent", "message": agent})
+        """经能力注册表分发（Phase 3）：选 handler 不再硬编码 if/elif。
+
+        各能力的真正逻辑（含副作用/状态映射）在 `orchestration/capability_handlers.py` 的
+        CapabilityHandler 里；这里只查表→run→投影回 ResponsePayload（对下游字节级等价）。
+        未注册能力（理论上 require_tool 已先拦）→ unknown_agent。
+
+        need_evidence 回路（Phase 5）：子能力（如 Diagnosis 信号不足）回 `next_request=need_evidence`
+        而非自己读 source；Manager 调统一只读证据 worker 补证据、注入 context，再复跑一次（仅一次）。
+        """
+        handler = self._handlers.get(agent)
+        if handler is None:
+            return ResponsePayload(status=Status.ERROR, confidence=0.0, result={},
+                                   error={"code": "unknown_agent", "message": agent})
+        result = handler.run(user_input, context)
+        if (result.next_request is not None
+                and result.next_request.kind == NextRequestKind.NEED_EVIDENCE
+                and not context.get("_evidence_gathered")):
+            self._fulfill_need_evidence(result.next_request, user_input, context)
+            result = handler.run(user_input, context)  # 带证据复跑一次（防重入由 _evidence_gathered 守护）
+        return result.to_response_payload()
+
+    def _fulfill_need_evidence(self, request: "NextRequest", user_input: str,
+                               context: Dict[str, Any]) -> None:
+        """响应子能力的 need_evidence：调统一只读证据 worker 采证据，注入 context 供复跑。
+
+        只读不变量：经 `gather_evidence`（require_tool("agent.evidence")），EvidenceResearchAgent
+        只调 READ 工具。证据本体不进 Conversation State——只注入 artifact 摘要 + 指针。
+        """
+        from ..contracts.enums import EvidenceSourceType
+
+        sts = []
+        for s in (request.payload.get("source_types") or []):
+            try:
+                sts.append(EvidenceSourceType(s))
+            except ValueError:
+                continue
+        if not sts:
+            sts = [EvidenceSourceType.ATTACHMENT, EvidenceSourceType.RESUME]
+        packet = self.gather_evidence(EvidenceRequest(
+            query=str(request.payload.get("query") or user_input), source_types=sts))
+        self.attach_evidence_to_context(packet, context)  # 注入 context["evidence_artifact"]
+        context["_evidence_gathered"] = True              # 防重入：一次诊断只补一次证据
+        context["_evidence_refs"] = list(packet.evidence_refs)
 
     @staticmethod
     def _reason_for(agent: str, out: Any) -> str:

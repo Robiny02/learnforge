@@ -65,7 +65,7 @@ def seed(db_path: str) -> None:
 
 def simulate_turn(db_path: str, query: str) -> None:
     """模拟一轮对话的记忆读写（用真实 RetrievalAgent 检索 seeded 的长期记忆）。"""
-    from ..agents.manager import ManagerAgent
+    from ..orchestration.manager import ManagerAgent
     from ..agents.retrieval import RetrievalAgent
 
     mgr = ManagerAgent(db_path=db_path)

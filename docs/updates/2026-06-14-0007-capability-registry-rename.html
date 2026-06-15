@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0007 · CapabilityRegistry 命名收敛</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>命名收敛：MCP_REGISTRY → CAPABILITY_REGISTRY</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 6</span>
+      <span class="badge type">refactor</span>
+      <span class="badge risk-low">risk · low</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0007 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>收掉边界 B1 命名地狱的最后一块：<code>tools/registry.py</code> 里的 <code>MCP_REGISTRY</code>/<code>MCPRegistry</code>
+       其实是<strong>内部能力权限目录</strong>（工具名 → ToolSpec + 权限校验），与外部 MCP server（<code>tools/mcp/</code>）
+       毫无关系，却顶着 MCP 的名字，读代码极易误解。本次更名为 <code>CAPABILITY_REGISTRY</code>/<code>CapabilityRegistry</code>，
+       旧名保留为兼容别名。</p>
+
+    <h2>变更内容</h2>
+    <ul>
+      <li><code>tools/registry.py</code>：<code>MCPRegistry → CapabilityRegistry</code>、
+          <code>MCP_REGISTRY → CAPABILITY_REGISTRY</code>，更新模块文档说明它是“内部能力权限目录、与外部 MCP 无关”。</li>
+      <li>文件末尾保留<strong>兼容别名</strong> <code>MCPRegistry = CapabilityRegistry</code>、
+          <code>MCP_REGISTRY = CAPABILITY_REGISTRY</code>（向后兼容历史 import）。</li>
+      <li>第一方代码全部改指新名：<code>agents/base.py</code>、<code>skills/registry.py</code>、
+          <code>tools/collection.py</code>、<code>tools/__init__.py</code>（再导出新名 + 兼容别名）+ 3 个测试文件。</li>
+    </ul>
+
+    <div class="callout good">
+      行为零变化：别名 <code>is</code> 同一对象（<code>MCP_REGISTRY is CAPABILITY_REGISTRY</code>），任何仍用旧名的外部/历史代码继续可用。
+    </div>
+
+    <h2>同时评估并“留下”的两项</h2>
+    <p>Phase 6 还标过两处，复核后<strong>改判为保留</strong>（去掉 LF-CLEANUP 标记）：</p>
+    <ul>
+      <li><code>tools/runtime.py::DEFAULT_TOOL_REGISTRY</code>：看似 facade，实为默认工具 handler 的
+          <strong>注册落点</strong>（<code>_register_defaults</code> 把 diagnosis/file/evidence 工具注册进它 → TOOLS），
+          是 bootstrap 入口而非死代码 → 保留。</li>
+      <li><code>graph/main_graph.py</code>：<code>python -m learnforge.graph.main_graph</code> 是 CLAUDE.md 记录的
+          smoke 入口，合法别名 → 保留。</li>
+    </ul>
+    <p>至此源码内 <strong>LF-CLEANUP 标记全部清零</strong>（要么已清理，要么评估后明确保留）。</p>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="mod">～ tools/registry.py（更名 + 兼容别名 + 文档）</span><br>
+      <span class="mod">～ tools/__init__.py（导出新名 + 别名）、tools/collection.py、agents/base.py、skills/registry.py（改指新名）</span><br>
+      <span class="mod">～ 测试 ×3（test_agent_capabilities / test_builtin_mcp / test_file_tools_and_evidence）</span><br>
+      <span class="mod">～ tools/runtime.py、graph/main_graph.py（LF-CLEANUP → 保留说明）、cleanup-manifest.md</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>别名等价冒烟：<code>MCP_REGISTRY is CAPABILITY_REGISTRY</code> ✅。</li>
+      <li>全量：<strong>639 passed, 11 skipped</strong>，零回归；<code>ruff</code> 改动文件全 clean。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>纯更名 + 别名，行为零变化。回滚 = 还原 registry.py 的名字、撤回 import 改动（别名使风险进一步降低）。</p>
+
+    <h2>下一步</h2>
+    <p>剩 Phase 7：<code>ResponsePayload</code> 全量切 <code>AgentResult</code>、移除 Manager 的 <code>meta</code>/<code>context</code>
+       旁路 dict（需先迁 app/server 等读取点）；以及 <code>ToolSpec</code>↔<code>BaseTool</code> 两套 descriptor 合并。
+       均为较大、需独立规划的收尾项。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

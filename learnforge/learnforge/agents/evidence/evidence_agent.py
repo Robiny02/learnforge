@@ -29,12 +29,10 @@ from ...contracts.agents.evidence import (
     EvidenceRequest,
     SourceRef,
 )
-from ...contracts.enums import AgentId, EvidenceSourceType
+from ...contracts.enums import AgentId
 from ...llm.client import LLM
 from ...skills.base import SkillPermissionError
 from ..base import BaseAgent
-
-_MAX_SNIPPET = 240
 
 
 class _EvidenceSummary(BaseModel):
@@ -51,6 +49,9 @@ class EvidenceResearchAgent(BaseAgent):
     def __init__(self, db_path: Optional[str] = None) -> None:
         super().__init__()
         self._db_path = db_path
+        # 可插拔证据源（Phase 4）：source_type → EvidenceProviderHandler。新增源 = 加一个 provider。
+        from .providers import build_default_providers
+        self._providers = build_default_providers(self)
 
     # ------------------------------------------------------------------ run
     def run(self, request: EvidenceRequest) -> EvidencePacket:
@@ -59,8 +60,13 @@ class EvidenceResearchAgent(BaseAgent):
         warnings: List[str] = []
 
         for st in request.source_types:
+            provider = self._providers.get(st)
+            if provider is None:
+                continue  # 不支持的 source_type 静默跳过（与旧 _collect 无 else 分支等价）。
             try:
-                self._collect(st, request, evidence_refs, source_refs)
+                pr = provider.fetch(request.query, request.targets, {})
+                evidence_refs.extend(pr.evidence_refs)
+                source_refs.extend(pr.source_refs)
             except SkillPermissionError as exc:
                 # 越权（不该发生，skill 只读）→ 记 warning，不崩、不写。
                 source_refs.append(SourceRef(source_type=st, status="denied", detail=str(exc)))
@@ -79,64 +85,6 @@ class EvidenceResearchAgent(BaseAgent):
             missing_info=missing,
             warnings=warnings,
         )
-
-    # ------------------------------------------------------- per-source collect
-    def _collect(self, st: EvidenceSourceType, request: EvidenceRequest,
-                 evidence_refs: List[EvidenceRef], source_refs: List[SourceRef]) -> None:
-        if st == EvidenceSourceType.FILE:
-            self._collect_files(request, evidence_refs, source_refs)
-        elif st == EvidenceSourceType.REPO:
-            self._collect_repo(request, evidence_refs, source_refs)
-        elif st == EvidenceSourceType.ATTACHMENT:
-            self._collect_attachment(request, evidence_refs, source_refs)
-        elif st == EvidenceSourceType.RESUME:
-            self._collect_resume(request, evidence_refs, source_refs)
-
-    def _collect_files(self, request: EvidenceRequest, evidence_refs, source_refs) -> None:
-        for path in request.targets:
-            res = self.call_tool("file.read", {"path": path})
-            if res.ok and isinstance(res.data, dict):
-                content = (res.data.get("content") or "").strip()
-                source_refs.append(SourceRef(source_type=EvidenceSourceType.FILE,
-                                             locator=path, status="ok" if content else "empty"))
-                if content:
-                    evidence_refs.append(EvidenceRef(
-                        locator=path, snippet=content[:_MAX_SNIPPET],
-                        source_type=EvidenceSourceType.FILE, score=0.6))
-            else:
-                source_refs.append(SourceRef(source_type=EvidenceSourceType.FILE, locator=path,
-                                             status="not_found", detail=res.error or ""))
-
-    def _collect_repo(self, request: EvidenceRequest, evidence_refs, source_refs) -> None:
-        res = self.call_tool("repo.search", {"query": request.query, "db_path": self._db_path})
-        matches = (res.data or {}).get("matches", []) if isinstance(res.data, dict) else []
-        source_refs.append(SourceRef(source_type=EvidenceSourceType.REPO, locator=request.query,
-                                     status="ok" if matches else "empty"))
-        for m in matches:
-            evidence_refs.append(EvidenceRef(
-                locator=f"{m.get('path')}:{m.get('line')}", snippet=str(m.get("snippet", ""))[:_MAX_SNIPPET],
-                source_type=EvidenceSourceType.REPO, score=0.5))
-
-    def _collect_attachment(self, request: EvidenceRequest, evidence_refs, source_refs) -> None:
-        res = self.call_tool("attachment.recall",
-                             {"query": request.query, "db_path": self._db_path})
-        chunks = (res.data or {}).get("chunks", []) if isinstance(res.data, dict) else []
-        source_refs.append(SourceRef(source_type=EvidenceSourceType.ATTACHMENT, locator=request.query,
-                                     status="ok" if chunks else "empty"))
-        for c in chunks:
-            evidence_refs.append(EvidenceRef(
-                locator=str(c.get("chunk_id", "")), snippet=str(c.get("text", ""))[:_MAX_SNIPPET],
-                source_type=EvidenceSourceType.ATTACHMENT, score=0.5))
-
-    def _collect_resume(self, request: EvidenceRequest, evidence_refs, source_refs) -> None:
-        res = self.call_tool("resume.recall", {"query": request.query, "db_path": self._db_path})
-        diags = (res.data or {}).get("diagnoses", []) if isinstance(res.data, dict) else []
-        source_refs.append(SourceRef(source_type=EvidenceSourceType.RESUME, locator=request.query,
-                                     status="ok" if diags else "empty"))
-        for d in diags:
-            evidence_refs.append(EvidenceRef(
-                locator=str(d.get("diagnosis_id", "")), snippet=str(d.get("summary", ""))[:_MAX_SNIPPET],
-                source_type=EvidenceSourceType.RESUME, score=0.5))
 
     # ----------------------------------------------------------------- summary
     def _summarize(self, request: EvidenceRequest,

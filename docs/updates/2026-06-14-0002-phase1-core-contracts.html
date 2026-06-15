@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0002 · 核心契约 AgentResult</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>核心契约：AgentResult / ArtifactRef / NextRequest</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 1</span>
+      <span class="badge type">contracts</span>
+      <span class="badge risk-low">risk · low</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0002 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>当前子 Agent 的回收结果散在三处：<code>ResponsePayload.result: Dict</code>（不透明结论）、Manager 主循环里的
+       <code>context</code> grab-bag（<code>context["diagnosis"]</code> / <code>["evidence_artifact"]</code>）、以及
+       <code>meta</code> grab-bag（<code>meta["notion_url"]</code> / <code>["path_committed"]</code> /
+       <code>["suggest_mock"]</code>…）。本次<strong>纯加法</strong>引入统一的类型化结果契约，为后续 Phase 3 把
+       Manager 的硬编码派发改成注册表分发打地基。</p>
+
+    <h2>变更内容</h2>
+    <ul>
+      <li><code>AgentResult</code> —— 泛化 <code>ResponsePayload</code>，字段：
+          <code>status / confidence / payload / evidence_refs / artifact_refs / next_request / reason / cost_usd</code>。
+          让 Manager 只读这几个字段即可编排，不必知道底下是 qa 还是 mock。</li>
+      <li><code>ArtifactRef</code> + <code>ArtifactKind</code> —— 类型化“产物指针”，取代散落的
+          <code>meta[...]</code>（notion / report / plan_image / committed_path / mock_session / diagnosis_report…）。</li>
+      <li><code>NextRequest</code> + <code>NextRequestKind</code> —— 结构化“下一步诉求”
+          （<code>need_evidence</code> / <code>need_clarification</code> / <code>suggest_capability</code>）。
+          这是协作铁律的落点：Diagnosis 证据不足时<strong>返回 need_evidence，而不是自己读 source 或 spawn</strong>。</li>
+      <li>双向 adapter <code>from_response_payload</code> / <code>to_response_payload</code> —— 供渐进迁移；
+          <code>ResponsePayload</code> 原样保留，仍是线上类型。</li>
+    </ul>
+
+    <div class="callout good">
+      <strong>零调用方改动</strong>：未触碰 Manager、各子 Agent、tools、skills。只新增文件 + 一处 <code>__init__</code> 导出。
+    </div>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="new">＋ learnforge/contracts/result.py（新增 · 契约 + adapter）</span><br>
+      <span class="new">＋ tests/test_agent_result_contract.py（新增 · 6 用例）</span><br>
+      <span class="mod">～ learnforge/contracts/__init__.py（追加导出，加法）</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>新增 <code>test_agent_result_contract.py</code>：往返等价、字段默认、序列化、
+          证据指针（非全文）不变量 —— 6 passed。</li>
+      <li>回归：<code>test_manager_composite</code> / <code>test_agent_capabilities</code> /
+          <code>test_dispatch_phase2</code> / <code>test_file_tools_and_evidence</code> —— 60 passed。</li>
+      <li>全量：<strong>620 passed, 11 skipped</strong>，无回归。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>纯加法、行为等价。<code>to_response_payload</code> 刻意丢弃 evidence/artifact/next_request 等附加字段——
+       不影响现有 <code>ResponsePayload</code> 语义。回滚 = 删除 <code>contracts/result.py</code> 与测试、撤回导出。</p>
+
+    <h2>下一步</h2>
+    <p>Phase 2 — 定义三个 <code>Protocol</code>（CapabilityHandler / EvidenceProviderHandler / ToolHandler）
+       + 空注册表，仍不接线。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

@@ -3,6 +3,10 @@
 统一后：`ToolRegistry`/`DEFAULT_TOOL_REGISTRY` 只是 `collection.TOOLS` 的薄 facade，
 不再各持一份 handler 表。agent 通过 `ToolRuntime.call` / `BaseAgent.call_tool` 调用，
 权限门由 agent.require_tool 把守，执行落到 TOOLS。
+
+注:`DEFAULT_TOOL_REGISTRY` 看似 facade，实为默认工具 handler 的**注册落点**（`_register_defaults`
+把 diagnosis/file/evidence 工具注册进它→TOOLS），是 bootstrap 入口而非死代码，故**保留**
+（评估见 docs/architecture/cleanup-manifest.md A 区）。
 """
 
 from __future__ import annotations

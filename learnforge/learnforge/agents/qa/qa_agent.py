@@ -26,7 +26,7 @@ from ...contracts.agents.qa import (
 from ...contracts.agents.retrieval import RetrievalInput
 from ...contracts.enums import AgentId, KnowledgeScope, ModelTier, QType, RetrievalMethod, Verdict
 from ...llm.client import LLM
-from ...mcp import tools as _toolmod
+from ...tools import openai_bridge as _toolmod
 from ..base import BaseAgent
 from ..react.loop import ReactRunner
 from ..retrieval import RetrievalAgent

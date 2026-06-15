@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnForge · 更新 #0006 · 证据子系统收敛与接通</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <a class="backlink" href="index.html">← 返回更新日志</a>
+    <h1>EvidenceProvider 收敛 + 接通 need_evidence 回路</h1>
+    <div class="badges">
+      <span class="badge phase">Phase 4 + 5</span>
+      <span class="badge type">feature</span>
+      <span class="badge risk-med">risk · med</span>
+      <span class="badge ok">tests · green</span>
+    </div>
+    <p class="meta">#0006 · 2026-06-14 · 分支 feat/mock-answer-quality · 基线 commit 4f11c2f</p>
+  </header>
+
+  <article>
+    <h2>背景 / 动机</h2>
+    <p>两件事一起做：① <strong>Phase 4</strong> 把分散的证据读取路径收敛成可插拔 provider；② <strong>Phase 5</strong>
+       把<strong>建好却悬空</strong>的 <code>EvidenceResearchAgent</code>（此前仅测试调用）真正接进诊断流程——
+       Diagnosis 信号不足时回 <code>need_evidence</code>，由 Manager 调统一只读证据 worker 补证据再复诊，
+       而不是让 Diagnosis 自己去读一堆 source。</p>
+
+    <h2>Phase 4 — EvidenceProvider 收敛</h2>
+    <ul>
+      <li>新增 <code>agents/evidence/providers.py</code>：四个实现 <code>EvidenceProviderHandler</code> 协议的 provider
+          （File / Repo / Attachment / Resume），把原 <code>EvidenceResearchAgent._collect_*</code> 的逐源逻辑**原样搬入**。</li>
+      <li><code>EvidenceResearchAgent.run()</code> 改为<strong>按 source_type 编排 provider</strong>：
+          <code>provider.fetch(query, targets, ctx) → ProviderResult(evidence_refs + source_refs)</code>，
+          合并进 <code>EvidencePacket</code>。新增证据源 = 加一个 provider，不改 worker 主循环。</li>
+      <li>细化 Phase 2 协议：<code>fetch</code> 返回 <code>ProviderResult</code>（新契约，含 source 勘探记录），
+          而非裸 <code>List[EvidenceRef]</code>。</li>
+      <li>provider 经 <code>agent.call_tool(...)</code> 走<strong>权限门</strong>调底层只读工具——严格只读不变量保持。</li>
+    </ul>
+
+    <h2>Phase 5 — 接通 need_evidence 回路</h2>
+    <ul>
+      <li><code>DiagnosisInput</code> 加可选 <code>evidence_context</code>（补来的只读证据摘要，进 ReAct 接地；
+          确定性兜底不据此编造掌握度）。</li>
+      <li><code>DiagnosisCapabilityHandler</code>：弱点诊断 <code>confidence &lt; 0.5</code> 且<strong>非复合</strong>、
+          <strong>未补过证据</strong> → 回 <code>AgentResult.next_request = need_evidence</code>（带 query + source_types），
+          且<strong>此时不落库</strong>（避免一次逻辑诊断写两条快照）。</li>
+      <li><code>Manager._dispatch_impl</code>：收到 <code>need_evidence</code> → <code>_fulfill_need_evidence</code> 调
+          <code>gather_evidence([attachment, resume])</code> → <code>attach_evidence_to_context</code> 注入
+          <code>context["evidence_artifact"]</code> → 置 <code>_evidence_gathered</code> 防重入 → <strong>复跑一次</strong>。</li>
+    </ul>
+
+    <div class="callout good">
+      只读 & 语义保持：补证据 + 复诊全程不写 mastery/path（<code>test_diagnosis_is_read_only</code> + 新测试守护）；
+      强信号（seeded_db conf≈0.55）与复合"准备面试"流程<strong>不触发</strong>——黄金回归与 §5.6 语义不变。
+      证据本体不进 Conversation State——只注入 artifact 摘要 + 指针。
+    </div>
+
+    <h2>涉及文件</h2>
+    <p class="files">
+      <span class="new">＋ agents/evidence/providers.py（四个 provider）</span><br>
+      <span class="new">＋ tests/test_phase5_need_evidence.py（6 用例）</span><br>
+      <span class="mod">～ agents/evidence/evidence_agent.py（run 改编排 provider，删 _collect_*）</span><br>
+      <span class="mod">～ contracts/agents/evidence.py（+ ProviderResult）、contracts/handlers.py（fetch→ProviderResult）</span><br>
+      <span class="mod">～ contracts/agents/diagnosis.py（+ evidence_context）、agents/diagnosis/diagnosis_agent.py（注入接地）</span><br>
+      <span class="mod">～ orchestration/capability_handlers.py（need_evidence 触发）、orchestration/manager.py（回路 + _fulfill_need_evidence）</span><br>
+      <span class="mod">～ tests/test_handler_registry.py（dummy provider → ProviderResult）、cleanup-manifest.md（两项 ✅ done）</span>
+    </p>
+
+    <h2>测试</h2>
+    <ul>
+      <li>新增 <code>test_phase5_need_evidence.py</code>：弱信号触发 / dispatch 补证据并复跑 / 强信号不触发 /
+          复合不触发 / 全程只读 / 防重入 —— 6 passed。</li>
+      <li>Phase 4 行为保持：<code>test_file_tools_and_evidence</code> 全绿（packet 仍只回片段+指针）。</li>
+      <li>全量：<strong>639 passed, 11 skipped</strong>（633 + 6），零回归；<code>ruff</code> 改动文件全 clean。</li>
+    </ul>
+
+    <h2>影响 / 风险 / 回滚</h2>
+    <p>风险 med（首次让 Diagnosis 经 Manager 触发证据采集）。但触发条件收窄（弱信号 + 非复合 + 一次性），
+       且证据 worker 严格只读。回滚 = 还原 <code>_dispatch_impl</code>、删 providers/evidence_context/need_evidence 分支。</p>
+
+    <h2>下一步</h2>
+    <p>Phase 6 余项：<code>MCP_REGISTRY → CAPABILITY_REGISTRY</code> 改名、<code>tools/runtime</code> facade 收口。
+       Phase 7：<code>ResponsePayload</code> 旧字段/旁路 dict 全量切 <code>AgentResult</code> 后清理。</p>
+  </article>
+
+  <footer>LearnForge 更新日志 · <a href="index.html">全部更新</a></footer>
+
+</div>
+</body>
+</html>

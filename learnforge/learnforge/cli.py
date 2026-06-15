@@ -717,7 +717,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--db", default=None, help="SQLite 库路径（默认 config.DB_PATH）")
     args = parser.parse_args(argv)
 
-    from .agents.manager import ManagerAgent
+    from .orchestration.manager import ManagerAgent
     from .config import DB_PATH
     from .storage.db import init_db
 

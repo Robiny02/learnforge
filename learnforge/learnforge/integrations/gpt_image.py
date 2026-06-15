@@ -253,7 +253,7 @@ _PARAMS = {
 
 
 def register() -> None:
-    from ..mcp import tools as toolmod
+    from ..tools import openai_bridge as toolmod
 
     if not toolmod.has_handler("gpt_image.generate"):
         toolmod.register_tool(

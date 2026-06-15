@@ -26,7 +26,7 @@ from ...contracts.agents.diagnosis import (
 from ...contracts.agents.mock import InterviewContext
 from ...contracts.enums import AgentId, EventType
 from ...llm.client import LLM
-from ...mcp import tools as _toolmod
+from ...tools import openai_bridge as _toolmod
 from ...skills.registry import SKILL_REGISTRY
 from ..base import BaseAgent
 from ..react.loop import ReactRunner
@@ -179,6 +179,9 @@ class DiagnosisAgent(BaseAgent):
         materials = self._recall_materials(payload)
         if materials:
             user_prompt += f"\n\n【参考材料(只读，勿据此编造掌握度)】\n{materials}"
+        # need_evidence 回路（Phase 5）：Manager 补来的证据摘要作为额外只读接地材料。
+        if payload.evidence_context:
+            user_prompt += f"\n\n【补充证据(只读，勿据此编造掌握度)】\n{payload.evidence_context}"
         res = ReactRunner(max_steps=4).run(
             self,
             user_prompt=user_prompt,

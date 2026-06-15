@@ -1,4 +1,8 @@
-"""MCPRegistry —— 工具名 → ToolSpec 解析，并作为 skill.allowed_tools 的 canonical 清单。
+"""CapabilityRegistry —— **内部能力权限目录**（工具名 → ToolSpec 解析），skill.allowed_tools 的 canonical 清单。
+
+> 命名（B1 收敛）：这是 LearnForge 内部能力/工具的权限目录，与外部 MCP server（`tools/mcp/`）**无关**。
+> 旧名 `MCPRegistry`/`MCP_REGISTRY` 易与外部 MCP 混淆，已更名为 `CapabilityRegistry`/`CAPABILITY_REGISTRY`；
+> 旧名保留为向后兼容别名（见文件末尾）。
 
 skill.spec.allowed_tools 中的工具名经此查找/校验：注册表登记了系统当前真实使用的
 内部能力名（LLM、检索、仓储读写、子 agent 派发、mock checkpoint）。这样 skill 声明的
@@ -15,7 +19,7 @@ from typing import Dict, List, Optional
 from .spec import ToolEffect, ToolSpec
 
 
-class MCPRegistry:
+class CapabilityRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, ToolSpec] = {}
 
@@ -108,7 +112,7 @@ def _namespace(name: str, desc: str, effect: ToolEffect) -> ToolSpec:
     )
 
 
-def _populate(registry: "MCPRegistry") -> None:
+def _populate(registry: "CapabilityRegistry") -> None:
     specs = [
         _namespace("llm", "Namespace for LLM capabilities.", ToolEffect.COMPUTE),
         _namespace("agent", "Namespace for subagent delegation.", ToolEffect.DELEGATE),
@@ -221,5 +225,10 @@ def _populate(registry: "MCPRegistry") -> None:
 
 
 # 全局单例（启动即登记 canonical 工具，供 skill 注册期校验）。
-MCP_REGISTRY = MCPRegistry()
-_populate(MCP_REGISTRY)
+CAPABILITY_REGISTRY = CapabilityRegistry()
+_populate(CAPABILITY_REGISTRY)
+
+# 向后兼容别名（B1 命名收敛）：旧名是内部能力权限目录，与外部 MCP server 无关。
+# 第一方代码已全部改用 CapabilityRegistry/CAPABILITY_REGISTRY；这两个别名仅为兼容历史 import 保留。
+MCPRegistry = CapabilityRegistry
+MCP_REGISTRY = CAPABILITY_REGISTRY

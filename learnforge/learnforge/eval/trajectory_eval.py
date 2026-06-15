@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Callable, List, Optional, Tuple
 
 from ..agents.diagnosis import DiagnosisAgent
-from ..agents.manager import ManagerAgent
+from ..orchestration.manager import ManagerAgent
 from ..contracts.agents.diagnosis import DiagnosisInput
 from ..contracts.agents.planning import PathDiff, PathItem
 from ..contracts.atom import KnowledgeAtom

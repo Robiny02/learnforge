@@ -36,6 +36,18 @@ class SourceRef(BaseModel):
     detail: str = ""
 
 
+class ProviderResult(BaseModel):
+    """一个 EvidenceProvider 单次只读读取的产物：采到的证据 + 来源勘探记录。
+
+    `evidence_refs` 是采纳的证据（指针 + 截断片段）；`source_refs` 记录探查过哪些来源、状态如何
+    （ok/empty/error/denied/not_found），即使没采到证据也回，供透明展示与下一步追读。
+    EvidenceResearchAgent 把各 provider 的 ProviderResult 合并进最终 EvidencePacket。
+    """
+
+    evidence_refs: List["EvidenceRef"] = Field(default_factory=list)
+    source_refs: List["SourceRef"] = Field(default_factory=list)
+
+
 class EvidenceRequest(BaseModel):
     """证据采集请求（Manager → EvidenceResearchAgent）。"""
 

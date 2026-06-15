@@ -119,7 +119,7 @@ prompts and no-key fallbacks. Pure functions: `detect_role_type`, `role_focus`, 
 `build_answer_card`. `MockInput.context: InterviewContext` (all optional) carries
 target_role/jd_text/role_type/resume_claims/projects. Only the grilling rubric was vendored —
 resume-polish / JD-tailoring / LaTeX / project-scout intentionally left out
-(`docs/interview-skill-integration.md`). Full notes in `agents/mock/CLAUDE.md`.
+(`docs/architecture/interview-skill-integration.md`). Full notes in `agents/mock/CLAUDE.md`.
 
 ### Mastery algorithm (`mastery.py`)
 
